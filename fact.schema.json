@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["files"],
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sourceFile" }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["moduleType", "domain", "exemptReason"],
+      "properties": {
+        "moduleType": {
+          "enum": ["", "core", "interface", "value", "shell", "state", "test", "stateTest", "exempt"]
+        },
+        "domain": { "type": "string" },
+        "exemptReason": {
+          "enum": [
+            "",
+            "app-entry",
+            "effect-facade",
+            "framework-boundary",
+            "principal-context",
+            "prototype-data",
+            "test-fixture",
+            "view-adapter"
+          ]
+        }
+      }
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "propertyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["references", "interleaving"],
+      "properties": {
+        "references": { "$ref": "#/$defs/stringList" },
+        "interleaving": { "type": "boolean" }
+      }
+    },
+    "sharedStateEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "references"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "references": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "interfaceLogicEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "functionBodies",
+        "initializerBodies",
+        "computedProperties",
+        "controlFlow",
+        "classDeclarations",
+        "imperativeDeclarations"
+      ],
+      "properties": {
+        "functionBodies": { "$ref": "#/$defs/stringList" },
+        "initializerBodies": { "$ref": "#/$defs/stringList" },
+        "computedProperties": { "$ref": "#/$defs/stringList" },
+        "controlFlow": { "$ref": "#/$defs/stringList" },
+        "classDeclarations": { "$ref": "#/$defs/stringList" },
+        "imperativeDeclarations": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "language",
+        "package",
+        "testTarget",
+        "metadata",
+        "imports",
+        "identifiers",
+        "apiReferences",
+        "decisionSurface",
+        "propertyTestSurface",
+        "decisionProducts",
+        "decisionReferences",
+        "effectfulImports",
+        "effectfulIdentifiers",
+        "sharedState",
+        "propertyChecks",
+        "interfaceLogicEvidence"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "language": { "enum": ["go", "swift"] },
+        "package": { "$ref": "#/$defs/nonEmptyString" },
+        "testTarget": { "type": "string" },
+        "metadata": { "$ref": "#/$defs/metadata" },
+        "imports": { "$ref": "#/$defs/stringList" },
+        "identifiers": { "$ref": "#/$defs/stringList" },
+        "apiReferences": { "$ref": "#/$defs/stringList" },
+        "decisionSurface": { "$ref": "#/$defs/stringList" },
+        "propertyTestSurface": { "$ref": "#/$defs/stringList" },
+        "decisionProducts": { "$ref": "#/$defs/stringList" },
+        "decisionReferences": { "$ref": "#/$defs/stringList" },
+        "effectfulImports": { "$ref": "#/$defs/stringList" },
+        "effectfulIdentifiers": { "$ref": "#/$defs/stringList" },
+        "sharedState": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sharedStateEvidence" }
+        },
+        "propertyChecks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/propertyCheck" }
+        },
+        "interfaceLogicEvidence": { "$ref": "#/$defs/interfaceLogicEvidence" }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+// swift-tools-version: 6.0
+
+import PackageDescription
+
+let package = Package(
+  name: "SwiftArchLint",
+  platforms: [
+    .macOS(.v14)
+  ],
+  products: [
+    .executable(name: "SwiftArchLint", targets: ["SwiftArchLint"])
+  ],
+  dependencies: [
+    .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.0"),
+    .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "603.0.1")
+  ],
+  targets: [
+    .executableTarget(
+      name: "SwiftArchLint",
+      dependencies: [
+        .product(name: "SwiftParser", package: "swift-syntax"),
+        .product(name: "SwiftSyntax", package: "swift-syntax"),
+        .product(name: "Yams", package: "Yams"),
+      ]
+    )
+  ]
+)

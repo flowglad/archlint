@@ -1,0 +1,1321 @@
+#!/usr/bin/env sh
+set -eu
+
+package_root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH= cd -- "$package_root/.." && pwd)"
+tmp_root="$(mktemp -d)"
+trap 'rm -rf "$tmp_root"' EXIT INT TERM
+
+run_lint() {
+  uv run --project "$repo_root" python "$repo_root/evaluate.py" --repo-root "$1" --adapter swift --swift-xcodegen apps/ios/project.yml
+}
+
+run_adapter() {
+  swift run --package-path "$package_root" SwiftArchLint --repo-root "$1" --xcodegen apps/ios/project.yml
+}
+
+assert_passes() {
+  fixture="$1"
+  if ! output="$(run_lint "$fixture" 2>&1)"; then
+    printf '%s\n' "expected fixture to pass: $fixture" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+assert_fails_with() {
+  fixture="$1"
+  expected="$2"
+  if output="$(run_lint "$fixture" 2>&1)"; then
+    printf '%s\n' "expected fixture to fail: $fixture" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
+    printf '%s\n' "expected fixture output to contain: $expected" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+assert_fact_refs_contain() {
+  fixture="$1"
+  suffix="$2"
+  field="$3"
+  expected="$4"
+  if ! output="$(run_adapter "$fixture")"; then
+    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
+import json
+import sys
+
+suffix = sys.argv[1]
+field = sys.argv[2]
+expected = sys.argv[3]
+document = json.load(sys.stdin)
+matches = [item for item in document["files"] if item["path"].endswith(suffix)]
+if not matches:
+    raise SystemExit(f"missing fact ending with {suffix}")
+if field == "propertyTestReferences":
+    references = {
+        reference
+        for check in matches[0]["propertyChecks"]
+        for reference in check["references"]
+    }
+elif field == "propertyInterleavingReferences":
+    references = {
+        reference
+        for check in matches[0]["propertyChecks"]
+        if check["interleaving"]
+        for reference in check["references"]
+    }
+else:
+    references = set(matches[0][field])
+if expected not in references:
+    raise SystemExit(f"missing {expected} in {sorted(references)}")
+' "$suffix" "$field" "$expected"; then
+    exit 1
+  fi
+}
+
+assert_fact_refs_not_contain() {
+  fixture="$1"
+  suffix="$2"
+  field="$3"
+  unexpected="$4"
+  if ! output="$(run_adapter "$fixture")"; then
+    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
+import json
+import sys
+
+suffix = sys.argv[1]
+field = sys.argv[2]
+unexpected = sys.argv[3]
+document = json.load(sys.stdin)
+matches = [item for item in document["files"] if item["path"].endswith(suffix)]
+if not matches:
+    raise SystemExit(f"missing fact ending with {suffix}")
+if field == "propertyTestReferences":
+    references = {
+        reference
+        for check in matches[0]["propertyChecks"]
+        for reference in check["references"]
+    }
+elif field == "propertyInterleavingReferences":
+    references = {
+        reference
+        for check in matches[0]["propertyChecks"]
+        if check["interleaving"]
+        for reference in check["references"]
+    }
+else:
+    references = set(matches[0][field])
+if unexpected in references:
+    raise SystemExit(f"unexpected {unexpected} in {sorted(references)}")
+' "$suffix" "$field" "$unexpected"; then
+    exit 1
+  fi
+}
+
+assert_shared_state_contains() {
+  fixture="$1"
+  suffix="$2"
+  expected_kind="$3"
+  expected_reference="$4"
+  if ! output="$(run_adapter "$fixture")"; then
+    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
+import json
+import sys
+
+suffix = sys.argv[1]
+expected_kind = sys.argv[2]
+expected_reference = sys.argv[3]
+document = json.load(sys.stdin)
+matches = [item for item in document["files"] if item["path"].endswith(suffix)]
+if not matches:
+    raise SystemExit(f"missing fact ending with {suffix}")
+for evidence in matches[0]["sharedState"]:
+    if evidence["kind"] == expected_kind and expected_reference in set(evidence["references"]):
+        raise SystemExit(0)
+raise SystemExit(f"missing shared state {expected_kind}:{expected_reference} in {matches[0]['sharedState']}")
+' "$suffix" "$expected_kind" "$expected_reference"; then
+    exit 1
+  fi
+}
+
+new_fixture() {
+  name="$1"
+  fixture="$tmp_root/$name"
+  mkdir -p "$fixture/apps/ios/MailApp/Backend" "$fixture/apps/ios/MailAppTests"
+  cat > "$fixture/apps/ios/project.yml" <<'EOF'
+targets:
+  MailApp:
+    type: application
+    sources:
+      - MailApp
+  MailAppTests:
+    type: bundle.unit-test
+    sources:
+      - MailAppTests
+    dependencies:
+      - target: MailApp
+EOF
+  printf '%s\n' "$fixture"
+}
+
+passing_fixture="$(new_fixture passing)"
+cat > "$passing_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$passing_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+import XCTest
+
+final class HTTPMailBackendDeciderTests: XCTestCase {
+  func testPath() {
+    XCTAssertEqual(HTTPMailBackendDecider.decidePath(), "/v1/accounts")
+  }
+}
+
+@Test
+func pathProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+    #expect(HTTPMailBackendDecider.decidePath() == "/v1/accounts")
+  }
+}
+EOF
+cat > "$passing_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+final class HTTPMailBackendClient {
+  func makeRequest() -> URLRequest {
+    let path = HTTPMailBackendDecider.decidePath()
+    let url = URL(string: "http://localhost" + path)!
+    return URLRequest(url: url)
+  }
+}
+EOF
+cat > "$passing_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module interface
+// @archlint.domain backend.http
+struct AddAccountRequest: Equatable {
+  let displayName: String
+  let emailAddress: String
+}
+EOF
+assert_passes "$passing_fixture"
+
+missing_core_reference_fixture="$(new_fixture missing-core-reference)"
+cat > "$missing_core_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$missing_core_reference_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+
+func pathProperty() {
+  _ = PropertyBased.self
+}
+EOF
+cat > "$missing_core_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+final class HTTPMailBackendClient {
+  func makeRequest() -> URLRequest {
+    URLRequest(url: URL(string: "http://localhost")!)
+  }
+}
+EOF
+assert_fails_with "$missing_core_reference_fixture" \
+  "shell module must reference a core API in the same @archlint.domain"
+
+local_core_name_only_fixture="$(new_fixture local-core-name-only)"
+cat > "$local_core_name_only_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$local_core_name_only_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+@Test
+func pathProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+    #expect(HTTPMailBackendDecider.decidePath() == "/v1/accounts")
+  }
+}
+EOF
+cat > "$local_core_name_only_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+struct HTTPMailBackendClient {
+  func makePath() -> String {
+    let decidePath = "/v1/accounts"
+    return decidePath
+  }
+}
+EOF
+assert_fails_with "$local_core_name_only_fixture" \
+  "shell module must reference a core API in the same @archlint.domain"
+
+static_property_decision_surface_fixture="$(new_fixture static-property-decision-surface)"
+cat > "$static_property_decision_surface_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.sqlite
+enum SQLiteMailSyncStateDecider {
+  static let createTablesSQL: String = "CREATE TABLE messages(id TEXT)"
+
+  static func loadedState() -> String {
+    "loaded"
+  }
+}
+EOF
+cat > "$static_property_decision_surface_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+@Test
+func schemaProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+    #expect(SQLiteMailSyncStateDecider.loadedState() == "loaded")
+  }
+}
+EOF
+cat > "$static_property_decision_surface_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateSchema.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.sqlite
+import Foundation
+
+struct SQLiteMailSyncStateSchema {
+  let request = URLRequest(url: URL(string: "http://localhost")!)
+  let sql: String = SQLiteMailSyncStateDecider.createTablesSQL
+}
+EOF
+assert_passes "$static_property_decision_surface_fixture"
+
+arbitrary_core_type_reference_fixture="$(new_fixture arbitrary-core-type-reference)"
+cat > "$arbitrary_core_type_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+struct CoreVocabulary {}
+
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$arbitrary_core_type_reference_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+@Test
+func pathProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+    #expect(HTTPMailBackendDecider.decidePath() == "/v1/accounts")
+  }
+}
+EOF
+cat > "$arbitrary_core_type_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+struct HTTPMailBackendClient {
+  func handle(_ value: CoreVocabulary) {
+    _ = value
+  }
+}
+EOF
+assert_fails_with "$arbitrary_core_type_reference_fixture" \
+  "shell module must reference a core API in the same @archlint.domain"
+
+missing_metadata_fixture="$(new_fixture missing-metadata)"
+cat > "$missing_metadata_fixture/apps/ios/MailApp/Backend/Random.swift" <<'EOF'
+struct RandomValue {}
+EOF
+assert_fails_with "$missing_metadata_fixture" "module must declare @archlint.module"
+
+metadata_after_source_fixture="$(new_fixture metadata-after-source)"
+cat > "$metadata_after_source_fixture/apps/ios/MailApp/Backend/Random.swift" <<'EOF'
+struct RandomValue {}
+// @archlint.module value
+// @archlint.domain random.value
+EOF
+assert_fails_with "$metadata_after_source_fixture" "module must declare @archlint.module"
+
+duplicate_module_metadata_fixture="$(new_fixture duplicate-module-metadata)"
+cat > "$duplicate_module_metadata_fixture/apps/ios/MailApp/Backend/Random.swift" <<'EOF'
+// @archlint.module core
+// @archlint.module value
+// @archlint.domain random.value
+struct RandomValue {}
+EOF
+assert_fails_with "$duplicate_module_metadata_fixture" "module must declare @archlint.module"
+
+duplicate_domain_metadata_fixture="$(new_fixture duplicate-domain-metadata)"
+cat > "$duplicate_domain_metadata_fixture/apps/ios/MailApp/Backend/Random.swift" <<'EOF'
+// @archlint.module value
+// @archlint.domain random.value
+// @archlint.domain random.other
+struct RandomValue {}
+EOF
+assert_fails_with "$duplicate_domain_metadata_fixture" "module must declare @archlint.domain"
+
+duplicate_exempt_reason_metadata_fixture="$(new_fixture duplicate-exempt-reason-metadata)"
+cat > "$duplicate_exempt_reason_metadata_fixture/apps/ios/MailApp/Backend/MailPrototypeData.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason prototype-data
+// @archlint.exempt-reason test-fixture
+enum MailPrototypeData {
+  static let account = "demo"
+}
+EOF
+assert_fails_with "$duplicate_exempt_reason_metadata_fixture" \
+  "exempt module must declare @archlint.exempt-reason"
+
+test_module_in_production_fixture="$(new_fixture test-module-in-production)"
+cat > "$test_module_in_production_fixture/apps/ios/MailApp/Backend/RandomTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain random.value
+struct RandomTests {}
+EOF
+assert_fails_with "$test_module_in_production_fixture" \
+  "test module must be declared in a test target"
+
+malformed_domain_fixture="$(new_fixture malformed-domain)"
+cat > "$malformed_domain_fixture/apps/ios/MailApp/Backend/RandomDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain Backend_HTTP
+enum RandomDecider {
+  static func decide() -> Bool {
+    true
+  }
+}
+EOF
+assert_fails_with "$malformed_domain_fixture" \
+  "module domain must be lowercase dot-or-kebab segments"
+
+production_module_in_test_fixture="$(new_fixture production-module-in-test)"
+cat > "$production_module_in_test_fixture/apps/ios/MailAppTests/RandomDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain random.value
+enum RandomDecider {
+  static func decide() -> Bool {
+    true
+  }
+}
+EOF
+assert_fails_with "$production_module_in_test_fixture" \
+  "production module must not be declared in a test target"
+
+missing_exempt_reason_fixture="$(new_fixture missing-exempt-reason)"
+cat > "$missing_exempt_reason_fixture/apps/ios/MailApp/Backend/InstallationCredential.swift" <<'EOF'
+// @archlint.module exempt
+struct InstallationCredential {
+  let accessToken: String?
+}
+EOF
+assert_fails_with "$missing_exempt_reason_fixture" \
+  "exempt module must declare @archlint.exempt-reason"
+
+exempt_domain_fixture="$(new_fixture exempt-domain)"
+cat > "$exempt_domain_fixture/apps/ios/MailApp/Backend/MailPrototypeData.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.domain mail.sync
+// @archlint.exempt-reason prototype-data
+enum MailPrototypeData {
+  static let account = "demo"
+}
+EOF
+assert_fails_with "$exempt_domain_fixture" \
+  "exempt module must not declare @archlint.domain"
+
+unknown_exempt_reason_fixture="$(new_fixture unknown-exempt-reason)"
+cat > "$unknown_exempt_reason_fixture/apps/ios/MailApp/Backend/InstallationCredential.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason miscellaneous
+struct InstallationCredential {
+  let accessToken: String?
+}
+EOF
+assert_fails_with "$unknown_exempt_reason_fixture" "metadata.exemptReason"
+
+exempt_reason_outside_exempt_fixture="$(new_fixture exempt-reason-outside-exempt)"
+cat > "$exempt_reason_outside_exempt_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module interface
+// @archlint.domain backend.http
+// @archlint.exempt-reason prototype-data
+struct AddAccountRequest {
+  let displayName: String
+}
+EOF
+assert_fails_with "$exempt_reason_outside_exempt_fixture" \
+  "@archlint.exempt-reason is only valid on exempt modules"
+
+app_entry_exemption_fixture="$(new_fixture app-entry-exemption)"
+mkdir -p "$app_entry_exemption_fixture/apps/ios/MailApp/App"
+cat > "$app_entry_exemption_fixture/apps/ios/MailApp/App/MailApp.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason app-entry
+import SwiftUI
+
+@main
+struct MailApp: App {
+  var body: some Scene {
+    WindowGroup {
+      Text("Mail")
+    }
+  }
+}
+EOF
+assert_passes "$app_entry_exemption_fixture"
+
+view_adapter_exemption_fixture="$(new_fixture view-adapter-exemption)"
+mkdir -p "$view_adapter_exemption_fixture/apps/ios/MailApp/Features/Mailboxes"
+cat > "$view_adapter_exemption_fixture/apps/ios/MailApp/Features/Mailboxes/MailboxListView.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason view-adapter
+import SwiftUI
+
+struct MailboxListView: View {
+  let title: String
+
+  var body: some View {
+    Text(title)
+  }
+}
+EOF
+assert_passes "$view_adapter_exemption_fixture"
+
+framework_boundary_exemption_fixture="$(new_fixture framework-boundary-exemption)"
+cat > "$framework_boundary_exemption_fixture/apps/ios/MailApp/Backend/SystemKeychainClient.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason framework-boundary
+import Security
+
+struct SystemKeychainClient {
+  let keychainClass: CFString
+}
+EOF
+assert_passes "$framework_boundary_exemption_fixture"
+
+effect_facade_exemption_fixture="$(new_fixture effect-facade-exemption)"
+cat > "$effect_facade_exemption_fixture/apps/ios/MailApp/Backend/MailBackendClient.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason effect-facade
+protocol MailBackendClient {
+  func sync() async throws
+}
+EOF
+assert_passes "$effect_facade_exemption_fixture"
+
+prototype_data_exemption_fixture="$(new_fixture prototype-data-exemption)"
+mkdir -p "$prototype_data_exemption_fixture/apps/ios/MailApp/Domain"
+cat > "$prototype_data_exemption_fixture/apps/ios/MailApp/Domain/MailPrototypeData.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason prototype-data
+enum MailPrototypeData {
+  static let account = "demo"
+}
+EOF
+assert_passes "$prototype_data_exemption_fixture"
+
+test_fixture_exemption_fixture="$(new_fixture test-fixture-exemption)"
+cat > "$test_fixture_exemption_fixture/apps/ios/MailAppTests/FailingMailSyncStateStore.swift" <<'EOF'
+// @archlint.module exempt
+// @archlint.exempt-reason test-fixture
+struct FailingMailSyncStateStore {
+  let reason: String
+}
+EOF
+assert_passes "$test_fixture_exemption_fixture"
+
+generic_domain_fixture="$(new_fixture generic-domain)"
+for index in $(seq 1 17); do
+  cat > "$generic_domain_fixture/apps/ios/MailApp/Backend/BroadDomain$index.swift" <<EOF
+// @archlint.module interface
+// @archlint.domain overbroad.example
+struct BroadDomain$index {
+  let value: String
+}
+EOF
+done
+assert_fails_with "$generic_domain_fixture" \
+  "domain has 17 production modules; maximum is 16"
+
+interface_with_logic_fixture="$(new_fixture interface-with-logic)"
+cat > "$interface_with_logic_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module interface
+// @archlint.domain backend.http
+struct AddAccountRequest {
+  let displayName: String
+
+  var normalizedDisplayName: String {
+    displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+EOF
+assert_fails_with "$interface_with_logic_fixture" \
+  "interface module must not contain computed properties"
+
+value_with_computed_property_fixture="$(new_fixture value-with-computed-property)"
+cat > "$value_with_computed_property_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module value
+// @archlint.domain backend.http
+struct AddAccountRequest {
+  let displayName: String
+
+  var normalizedDisplayName: String {
+    displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+EOF
+assert_passes "$value_with_computed_property_fixture"
+
+value_with_branching_computed_property_fixture="$(new_fixture value-with-branching-computed-property)"
+cat > "$value_with_branching_computed_property_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module value
+// @archlint.domain backend.http
+struct AddAccountRequest {
+  let displayName: String
+
+  var normalizedDisplayName: String {
+    if displayName.isEmpty {
+      return "Mailbox"
+    }
+    return displayName
+  }
+}
+EOF
+assert_fails_with "$value_with_branching_computed_property_fixture" \
+  "value module must not contain control flow"
+
+value_with_callable_decision_fixture="$(new_fixture value-with-callable-decision)"
+cat > "$value_with_callable_decision_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
+// @archlint.module value
+// @archlint.domain backend.http
+struct AddAccountRequest {
+  let displayName: String
+
+  func normalizedDisplayName() -> String {
+    displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+EOF
+assert_fails_with "$value_with_callable_decision_fixture" \
+  "value module must not contain function bodies"
+
+core_enum_case_matching_shell_method_fixture="$(new_fixture core-enum-case-matching-shell-method)"
+cat > "$core_enum_case_matching_shell_method_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  enum Decision {
+    case add
+  }
+
+  static func decide() -> Decision {
+    .add
+  }
+}
+EOF
+cat > "$core_enum_case_matching_shell_method_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+@Test
+func decisionProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+    #expect(HTTPMailBackendDecider.decide() == .add)
+  }
+}
+EOF
+cat > "$core_enum_case_matching_shell_method_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+struct HTTPMailBackendClient {
+  func add() -> URLRequest {
+    _ = HTTPMailBackendDecider.decide()
+    return URLRequest(url: URL(string: "http://localhost")!)
+  }
+}
+EOF
+assert_passes "$core_enum_case_matching_shell_method_fixture"
+
+empty_decider_fixture="$(new_fixture empty-decider)"
+cat > "$empty_decider_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum SQLiteMailSyncStateDecider {}
+EOF
+assert_fails_with "$empty_decider_fixture" \
+  "core module must declare a callable decision API"
+assert_fails_with "$empty_decider_fixture" \
+  "core module must have a same-domain test or stateTest module"
+
+type_only_decider_fixture="$(new_fixture type-only-decider)"
+cat > "$type_only_decider_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecision.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+struct SQLiteMailSyncStateDecision {}
+EOF
+assert_fails_with "$type_only_decider_fixture" \
+  "core module must declare a callable decision API"
+
+effectful_decider_fixture="$(new_fixture effectful-decider)"
+cat > "$effectful_decider_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+import Foundation
+
+enum SQLiteMailSyncStateDecider {
+  static func decideRequest() -> URLRequest {
+    URLRequest(url: URL(string: "http://localhost")!)
+  }
+}
+EOF
+assert_fails_with "$effectful_decider_fixture" \
+  "effectful identifiers may only appear in shell, state, interface, test, stateTest, or exempt modules"
+assert_fails_with "$effectful_decider_fixture" \
+  "core module must have a same-domain test or stateTest module"
+
+missing_property_fixture="$(new_fixture missing-property)"
+cat > "$missing_property_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$missing_property_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import XCTest
+
+final class HTTPMailBackendDeciderTests: XCTestCase {
+  func testPath() {
+    XCTAssertEqual(HTTPMailBackendDecider.decidePath(), "/v1/accounts")
+  }
+}
+EOF
+assert_fails_with "$missing_property_fixture" \
+  "core module test must contain at least one property test"
+
+property_import_only_fixture="$(new_fixture property-import-only)"
+cat > "$property_import_only_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$property_import_only_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import XCTest
+
+enum HTTPMailBackendDeciderPropertySuite {
+  static func testPath() {
+    _ = PropertyBased.self
+  }
+}
+EOF
+assert_fails_with "$property_import_only_fixture" \
+  "core module test must contain at least one property test"
+
+property_name_only_fixture="$(new_fixture property-name-only)"
+cat > "$property_name_only_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$property_name_only_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import Testing
+
+@Test
+func pathProperty() {
+  #expect(HTTPMailBackendDecider.decidePath() == "/v1/accounts")
+}
+EOF
+assert_fails_with "$property_name_only_fixture" \
+  "core module test must contain at least one property test"
+
+unrelated_property_test_fixture="$(new_fixture unrelated-property-test)"
+cat > "$unrelated_property_test_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$unrelated_property_test_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendDeciderPropertySuite {
+  @Test
+  static func unrelatedProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { value in
+      #expect(value == value)
+    }
+  }
+}
+EOF
+assert_fails_with "$unrelated_property_test_fixture" \
+  "core module property tests must reference every decision API: decidePath"
+
+property_local_core_name_only_fixture="$(new_fixture property-local-core-name-only)"
+cat > "$property_local_core_name_only_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$property_local_core_name_only_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendDeciderPropertySuite {
+  @Test
+  static func pathProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { value in
+      let decidePath = value
+      #expect(decidePath == value)
+    }
+  }
+}
+EOF
+assert_fails_with "$property_local_core_name_only_fixture" \
+  "core module property tests must reference every decision API: decidePath"
+
+property_reachable_helper_fixture="$(new_fixture property-reachable-helper)"
+cat > "$property_reachable_helper_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$property_reachable_helper_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendDeciderPropertySuite {
+  @Test
+  static func pathProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { _ in
+      #expect(helperPath() == "/v1/accounts")
+    }
+  }
+
+  static func helperPath() -> String {
+    HTTPMailBackendDecider.decidePath()
+  }
+}
+EOF
+assert_passes "$property_reachable_helper_fixture"
+assert_fact_refs_contain \
+  "$property_reachable_helper_fixture" \
+  "HTTPMailBackendDeciderPropertySuite.swift" \
+  "propertyTestReferences" \
+  "decidePath"
+
+ordinary_array_property_fixture="$(new_fixture ordinary-array-property)"
+cat > "$ordinary_array_property_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decode(_ values: [Int]) -> Int {
+    values.count
+  }
+}
+EOF
+cat > "$ordinary_array_property_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendDeciderPropertySuite {
+  @Test
+  static func decodeAcceptsGeneratedArraysProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      #expect(HTTPMailBackendDecider.decode(values) == values.count)
+    }
+  }
+}
+EOF
+assert_passes "$ordinary_array_property_fixture"
+assert_fact_refs_contain \
+  "$ordinary_array_property_fixture" \
+  "HTTPMailBackendDeciderPropertySuite.swift" \
+  "propertyTestReferences" \
+  "decode"
+assert_fact_refs_not_contain \
+  "$ordinary_array_property_fixture" \
+  "HTTPMailBackendDeciderPropertySuite.swift" \
+  "propertyInterleavingReferences" \
+  "decode"
+
+property_unreachable_helper_fixture="$(new_fixture property-unreachable-helper)"
+cat > "$property_unreachable_helper_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$property_unreachable_helper_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendDeciderPropertySuite {
+  @Test
+  static func pathProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { value in
+      #expect(value == value)
+    }
+  }
+
+  static func helperPath() -> String {
+    HTTPMailBackendDecider.decidePath()
+  }
+}
+EOF
+assert_fails_with "$property_unreachable_helper_fixture" \
+  "core module property tests must reference every decision API: decidePath"
+
+wrong_domain_test_fixture="$(new_fixture wrong-domain-test)"
+cat > "$wrong_domain_test_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$wrong_domain_test_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain mail.sync
+import PropertyBased
+
+func pathProperty() {
+  _ = PropertyBased.self
+}
+EOF
+assert_fails_with "$wrong_domain_test_fixture" \
+  "core module must have a same-domain test or stateTest module"
+
+wrong_test_module_type_fixture="$(new_fixture wrong-test-module-type)"
+cat > "$wrong_test_module_type_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+cat > "$wrong_test_module_type_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module interface
+// @archlint.domain backend.http
+import PropertyBased
+
+func pathProperty() {
+  _ = PropertyBased.self
+}
+EOF
+assert_fails_with "$wrong_test_module_type_fixture" \
+  "core module must have a same-domain test or stateTest module"
+
+non_decider_core_fixture="$(new_fixture non-decider-core)"
+cat > "$non_decider_core_fixture/apps/ios/MailApp/Backend/HTTPMailBackendCore.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendCore {
+  static func decidePath() -> String {
+    "/v1/accounts"
+  }
+}
+EOF
+assert_fails_with "$non_decider_core_fixture" \
+  "core module must have a same-domain test or stateTest module"
+
+state_test_without_interleavings_fixture="$(new_fixture state-test-without-interleavings)"
+cat > "$state_test_without_interleavings_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func roundTripInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { value in
+      #expect(value == value)
+    }
+  }
+}
+EOF
+assert_fails_with "$state_test_without_interleavings_fixture" \
+  "stateTest module must contain property interleavings"
+
+state_test_interleavings_without_refs_fixture="$(new_fixture state-test-interleavings-without-refs)"
+cat > "$state_test_interleavings_without_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func roundTripInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(value == value)
+      }
+    }
+  }
+}
+EOF
+assert_fails_with "$state_test_interleavings_without_refs_fixture" \
+  "stateTest module interleavings must reference reachable APIs"
+
+state_test_interleavings_without_core_refs_fixture="$(new_fixture state-test-interleavings-without-core-refs)"
+cat > "$state_test_interleavings_without_core_refs_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.sqlite
+enum SQLiteMailSyncStateDecider {
+  static func reduce(_ value: Int) -> Int {
+    value
+  }
+}
+EOF
+cat > "$state_test_interleavings_without_core_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func reduceProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10)) { value in
+      #expect(SQLiteMailSyncStateDecider.reduce(value) == value)
+    }
+  }
+
+  @Test
+  static func unrelatedInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(helper(value) == value)
+      }
+    }
+  }
+
+  static func helper(_ value: Int) -> Int {
+    value
+  }
+}
+EOF
+assert_fails_with "$state_test_interleavings_without_core_refs_fixture" \
+  "stateTest module interleavings must reference same-domain core decision APIs"
+
+state_test_without_state_module_fixture="$(new_fixture state-test-without-state-module)"
+cat > "$state_test_without_state_module_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.sqlite
+enum SQLiteMailSyncStateDecider {
+  static func reduce(_ value: Int) -> Int {
+    value
+  }
+}
+EOF
+cat > "$state_test_without_state_module_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func reduceInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(SQLiteMailSyncStateDecider.reduce(value) == value)
+      }
+    }
+  }
+}
+EOF
+assert_fails_with "$state_test_without_state_module_fixture" \
+  "stateTest module must have a same-domain state module"
+
+state_test_interleaving_refs_fixture="$(new_fixture state-test-interleaving-refs)"
+cat > "$state_test_interleaving_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func roundTripInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(helper(value) == value)
+      }
+    }
+  }
+
+  static func helper(_ value: Int) -> Int {
+    SQLiteMailSyncStateDecider.reduce(value)
+  }
+}
+EOF
+assert_fact_refs_contain \
+  "$state_test_interleaving_refs_fixture" \
+  "SQLiteMailSyncStateDeciderPropertySuite.swift" \
+  "propertyInterleavingReferences" \
+  "reduce"
+
+state_unrelated_to_interleavings_fixture="$(new_fixture state-unrelated-to-interleavings)"
+cat > "$state_unrelated_to_interleavings_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module state
+// @archlint.domain backend.http
+import Foundation
+
+actor FakeMailBackendClient {
+  private var accounts: [String] = []
+
+  func add(_ account: String) {
+    accounts.append(account)
+  }
+}
+EOF
+cat > "$state_unrelated_to_interleavings_fixture/apps/ios/MailAppTests/HTTPMailBackendStatePropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+enum HTTPMailBackendStatePropertySuite {
+  @Test
+  static func unrelatedInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(OtherDecider.reduce(value) == value)
+      }
+    }
+  }
+}
+EOF
+assert_fails_with "$state_unrelated_to_interleavings_fixture" \
+  "state module must reference a core decision API reached by same-domain property interleavings"
+
+state_without_stateful_apis_fixture="$(new_fixture state-without-stateful-apis)"
+cat > "$state_without_stateful_apis_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.sqlite
+enum SQLiteMailSyncStateDecider {
+  static func reduce(_ value: Int) -> Int {
+    value
+  }
+}
+EOF
+cat > "$state_without_stateful_apis_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateStore.swift" <<'EOF'
+// @archlint.module state
+// @archlint.domain backend.sqlite
+struct SQLiteMailSyncStateStore {
+  func snapshot(_ value: Int) -> Int {
+    SQLiteMailSyncStateDecider.reduce(value)
+  }
+}
+EOF
+cat > "$state_without_stateful_apis_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+// @archlint.module stateTest
+// @archlint.domain backend.sqlite
+import PropertyBased
+import Testing
+
+enum SQLiteMailSyncStateDeciderPropertySuite {
+  @Test
+  static func reduceInterleavingsProperty() async {
+    await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
+      for value in values {
+        #expect(SQLiteMailSyncStateDecider.reduce(value) == value)
+      }
+    }
+  }
+}
+EOF
+assert_fails_with "$state_without_stateful_apis_fixture" \
+  "state module must own stateful APIs"
+
+shared_state_without_state_test_fixture="$(new_fixture shared-state-without-state-test)"
+cat > "$shared_state_without_state_test_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module state
+// @archlint.domain backend.http
+import Foundation
+
+actor FakeMailBackendClient {
+  private var accounts: [String] = []
+
+  func add(_ account: String) {
+    accounts.append(account)
+  }
+}
+EOF
+assert_fails_with "$shared_state_without_state_test_fixture" \
+  "state module must have a same-domain stateTest with property interleavings"
+
+shared_state_outside_state_fixture="$(new_fixture shared-state-outside-state)"
+cat > "$shared_state_outside_state_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+actor FakeMailBackendClient {
+  private var accounts: [String] = []
+
+  func add(_ account: String) {
+    accounts.append(account)
+  }
+}
+EOF
+assert_fails_with "$shared_state_outside_state_fixture" \
+  "shared mutable state may only appear in state, test, or stateTest modules"
+assert_shared_state_contains "$shared_state_outside_state_fixture" \
+  "FakeMailBackendClient.swift" "swift-actor-var" "FakeMailBackendClient"
+
+shared_state_comment_only_fixture="$(new_fixture shared-state-comment-only)"
+cat > "$shared_state_comment_only_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module interface
+// @archlint.domain backend.http
+// actor CommentOnly { private var accounts: [String] = [] }
+// @Published var commentOnly: String = ""
+// DatabaseQueue and UserDefaults.standard are mentioned in prose only.
+
+struct FakeMailBackendClient {
+  let endpoint: String
+}
+EOF
+assert_passes "$shared_state_comment_only_fixture"
+
+published_state_outside_state_fixture="$(new_fixture published-state-outside-state)"
+cat > "$published_state_outside_state_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Combine
+
+final class FakeMailBackendClient {
+  @Published var accounts: [String] = []
+}
+EOF
+assert_fails_with "$published_state_outside_state_fixture" \
+  "shared mutable state may only appear in state, test, or stateTest modules"
+assert_shared_state_contains "$published_state_outside_state_fixture" \
+  "FakeMailBackendClient.swift" "swift-published" "@Published"
+
+database_queue_state_outside_state_fixture="$(new_fixture database-queue-state-outside-state)"
+cat > "$database_queue_state_outside_state_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import GRDB
+
+struct FakeMailBackendClient {
+  let database: DatabaseQueue
+}
+EOF
+assert_fails_with "$database_queue_state_outside_state_fixture" \
+  "shared mutable state may only appear in state, test, or stateTest modules"
+assert_shared_state_contains "$database_queue_state_outside_state_fixture" \
+  "FakeMailBackendClient.swift" "swift-database-queue" "DatabaseQueue"
+
+user_defaults_state_outside_state_fixture="$(new_fixture user-defaults-state-outside-state)"
+cat > "$user_defaults_state_outside_state_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+struct FakeMailBackendClient {
+  func load() -> String {
+    UserDefaults.standard.string(forKey: "lastAccount") ?? ""
+  }
+}
+EOF
+assert_fails_with "$user_defaults_state_outside_state_fixture" \
+  "shared mutable state may only appear in state, test, or stateTest modules"
+assert_shared_state_contains "$user_defaults_state_outside_state_fixture" \
+  "FakeMailBackendClient.swift" "swift-user-defaults" "UserDefaults.standard"
