@@ -6,13 +6,14 @@ The implementation is split into one shared evaluator and language-specific fact
 
 - `evaluate.py` owns orchestration and policy. It calls requested adapters, validates each emitted JSON fact document with `jsonschema`, and evaluates rules for each adapter document independently.
 - `go/` parses Go source and emits architecture facts as JSON.
+- `ocaml/` parses OCaml source with compiler-libs and emits architecture facts as JSON.
 - `swift/` parses Swift source with SwiftSyntax and emits architecture facts as JSON.
 
-Adapters should not own policy or call the evaluator. Do not add new policy to `go/` or `swift/` when the rule can be expressed over the shared fact schema.
+Adapters should not own policy or call the evaluator. Do not add new policy to `go/`, `ocaml/`, or `swift/` when the rule can be expressed over the shared fact schema.
 
-When multiple adapters are requested, their facts are not merged before policy evaluation. The Go and Swift adapters describe different language universes, so shell-to-core, core-to-test, and state-to-stateTest relationships are evaluated inside each adapter result. Cross-language architecture relationships should be represented through explicit interface modules or backend API contracts, not by sharing an `@archlint.domain` string.
+When multiple adapters are requested, their facts are not merged before policy evaluation. The Go, OCaml, and Swift adapters describe different language universes, so shell-to-core, core-to-test, and state-to-stateTest relationships are evaluated inside each adapter result. Cross-language architecture relationships should be represented through explicit interface modules or backend API contracts, not by sharing an `@archlint.domain` string.
 
-Each adapter document must be single-language: the Go adapter may only emit `language: "go"` facts, and the Swift adapter may only emit `language: "swift"` facts. The `language` field exists to validate adapter boundaries and support file-local language-specific rules; it is not used to make cross-adapter relationship joins safe.
+Each adapter document must be single-language: the Go adapter may only emit `language: "go"` facts, the OCaml adapter may only emit `language: "ocaml"` facts, and the Swift adapter may only emit `language: "swift"` facts. The `language` field exists to validate adapter boundaries and support file-local language-specific rules; it is not used to make cross-adapter relationship joins safe.
 
 ## Running
 
@@ -34,6 +35,12 @@ Run Swift adapter fixture tests:
 sh swift/test.sh
 ```
 
+Run OCaml adapter fixture tests:
+
+```sh
+sh ocaml/test.sh
+```
+
 Consumer repositories can call the evaluator directly:
 
 ```sh
@@ -42,6 +49,8 @@ uv run --project /path/to/archlint python /path/to/archlint/evaluate.py \
   --adapter go \
   --go-module path/to/go-module \
   --go-packages './...' \
+  --adapter ocaml \
+  --ocaml-root . \
   --adapter swift \
   --swift-xcodegen path/to/project.yml
 ```
@@ -49,9 +58,10 @@ uv run --project /path/to/archlint python /path/to/archlint/evaluate.py \
 Adapter-specific inputs:
 
 - `--repo-root`: consumer repository root.
-- `--adapter`: `go` or `swift`; may be repeated.
+- `--adapter`: `go`, `ocaml`, or `swift`; may be repeated.
 - `--go-module`: Go module path relative to `--repo-root`.
 - `--go-packages`: Go package pattern relative to `--go-module`.
+- `--ocaml-root`: OCaml source root relative to `--repo-root`. Defaults to `.`.
 - `--swift-xcodegen`: XcodeGen project manifest path relative to `--repo-root`.
 
 The evaluator also accepts a fact JSON document on stdin or as a positional file path. This is mainly for tests and diagnostics.
@@ -64,12 +74,19 @@ uv sync --project .
 
 ## Module Metadata
 
-Every Go and Swift source module in application code must declare architecture metadata:
+Every Go, OCaml, and Swift source module in application code must declare architecture metadata:
 
 ```text
 // @archlint.module core|interface|value|shell|state|test|stateTest|exempt
 // @archlint.domain <domain>
 // @archlint.exempt-reason <reason>
+```
+
+OCaml files use the same tags inside a leading block comment:
+
+```ocaml
+(* @archlint.module core
+   @archlint.domain mail.sync *)
 ```
 
 These tags must appear in the leading file comment block before the package, imports, type declarations, or any other source body. Tags buried later in a file are ignored and should be treated as missing metadata.
@@ -218,11 +235,11 @@ Reference evidence must be internally consistent. Every `decisionSurface`, `prop
 
 Fact emission should also avoid stringly typed shortcuts. Adapters should report structural evidence from language parsers or dependency APIs: declarations, imports, member accesses, property-wrapper attributes, call expressions, exported APIs, and generated-input shapes. They should not infer facts from filename prose, comments, test names, or suffixes when the language ecosystem exposes a stronger structural signal. Adapters also should not emit policy violation text; they emit facts, and the shared evaluator owns rule messages.
 
-Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies, not to example tests or unrelated helper functions that merely live in the same source file. Property interleaving evidence is tied to generated operation-sequence inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements and Go `if`/`switch`/loop/select statements. Swift shared-state evidence is emitted from SwiftSyntax nodes such as actor stored `var` members, `@Published` properties, `DatabaseQueue` types, and `UserDefaults.standard` member access, not from source-text substring scans.
+Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies, not to example tests or unrelated helper functions that merely live in the same source file. Property interleaving evidence is tied to generated operation-sequence inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements, Go `if`/`switch`/loop/select statements, and OCaml `if`/`match`/loop expressions. Shared-state evidence is emitted from language AST nodes such as Swift actor stored `var` members, Go sync types, or OCaml top-level state allocations and mutable fields, not from source-text substring scans.
 
 The fact schema is intentionally strict:
 
-- `language` must be `go` or `swift`
+- `language` must be `go`, `ocaml`, or `swift`
 - `metadata.moduleType` and `metadata.exemptReason` must be known schema enum values, with `""` reserved for missing source tags
 - `path` and `package` must be non-empty strings
 - list fields must contain unique, non-empty strings

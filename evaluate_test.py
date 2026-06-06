@@ -196,6 +196,35 @@ class EvaluateTests(unittest.TestCase):
 
         self.assertEqual([], violations)
 
+    def test_core_module_exhaustive_property_surface_is_language_neutral(self):
+        core = source_file(
+            path="/repo/Core.ml",
+            language="ocaml",
+            package="Core",
+            identifiers=["decideSync", "helper"],
+            apiReferences=["decideSync", "helper"],
+            decisionSurface=["decideSync", "helper"],
+            propertyTestSurface=["decideSync", "helper"],
+            decisionReferences=["decideSync", "helper"],
+        )
+        linked_test = source_file(
+            path="/repo/Core_test.ml",
+            language="ocaml",
+            package="CoreTest",
+            testTarget="CoreTest",
+            metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
+            identifiers=["decideSync"],
+            apiReferences=["decideSync"],
+            propertyChecks=[property_check(["decideSync"])],
+        )
+
+        violations = evaluate.evaluate([core, linked_test])
+
+        self.assertIn(
+            "core module property tests must reference every decision API: helper",
+            [violation.message for violation in violations],
+        )
+
     def test_shell_module_requires_same_domain_core_reference(self):
         core = source_file(path="/repo/Core.swift")
         shell = source_file(
@@ -758,6 +787,20 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
+    def test_framework_boundary_exemption_may_own_runtime_shared_state(self):
+        boundary = source_file(
+            path="/repo/Boundary.ml",
+            language="ocaml",
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "framework-boundary"},
+            identifiers=["EffectType", "cache"],
+            effectfulIdentifiers=["EffectType"],
+            sharedState=[{"kind": "runtime-cache", "references": ["cache"]}],
+        )
+
+        violations = evaluate.evaluate([boundary])
+
+        self.assertEqual([], violations)
+
     def test_effect_facade_exemption_must_not_touch_effectful_api_directly(self):
         facade = source_file(
             path="/repo/Facade.swift",
@@ -1188,11 +1231,12 @@ class EvaluateTests(unittest.TestCase):
             propertyChecks=[property_check(["DecideSync"])],
         )
 
-        def fake_run_adapter(repo_root, adapter, go_module, go_packages, swift_xcodegen):
+        def fake_run_adapter(repo_root, adapter, go_module, go_packages, swift_xcodegen, ocaml_root):
             self.assertEqual(Path("/repo"), repo_root)
             self.assertEqual("backend-module", go_module)
             self.assertEqual("./domain/...", go_packages)
             self.assertEqual("client/project.yml", swift_xcodegen)
+            self.assertEqual("src", ocaml_root)
             return {"go": [go_core], "swift": [swift_test]}[adapter]
 
         with mock.patch.object(evaluate, "run_adapter", side_effect=fake_run_adapter):
@@ -1202,6 +1246,7 @@ class EvaluateTests(unittest.TestCase):
                 go_module="backend-module",
                 go_packages="./domain/...",
                 swift_xcodegen="client/project.yml",
+                ocaml_root="src",
             )
 
         self.assertIn(
@@ -1245,6 +1290,7 @@ class EvaluateTests(unittest.TestCase):
                 go_module="backend-module",
                 go_packages="./domain/...",
                 swift_xcodegen=None,
+                ocaml_root=None,
             )
 
         self.assertEqual(1, len(files))
@@ -1256,6 +1302,29 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("--go-packages", run.call_args.args[0])
         self.assertEqual("backend-module", run.call_args.args[0][run.call_args.args[0].index("--go-module") + 1])
         self.assertEqual("./domain/...", run.call_args.args[0][run.call_args.args[0].index("--go-packages") + 1])
+
+    def test_run_ocaml_adapter_constructs_dune_command(self):
+        payload = valid_fact_document()
+        payload["files"][0]["path"] = "/repo/lib/decision.ml"
+        payload["files"][0]["language"] = "ocaml"
+        completed = subprocess_result(stdout=evaluate.json.dumps(payload), returncode=0)
+
+        with mock.patch.object(evaluate.subprocess, "run", return_value=completed) as run:
+            files = evaluate.run_adapter(
+                Path("/repo"),
+                "ocaml",
+                go_module=None,
+                go_packages=None,
+                swift_xcodegen=None,
+                ocaml_root="lib",
+            )
+
+        self.assertEqual("ocaml", files[0].language)
+        command = run.call_args.args[0]
+        self.assertEqual("dune", command[0])
+        self.assertIn("--root", command)
+        self.assertIn("./main.exe", command)
+        self.assertEqual("lib", command[command.index("--ocaml-root") + 1])
 
     def test_run_adapter_rejects_facts_for_another_language(self):
         payload = {
@@ -1291,6 +1360,7 @@ class EvaluateTests(unittest.TestCase):
                     go_module="backend-module",
                     go_packages="./domain/...",
                     swift_xcodegen=None,
+                    ocaml_root=None,
                 )
 
     def test_run_adapter_reports_adapter_failure_output(self):
@@ -1304,6 +1374,7 @@ class EvaluateTests(unittest.TestCase):
                     go_module="backend-module",
                     go_packages="./domain/...",
                     swift_xcodegen=None,
+                    ocaml_root=None,
                 )
 
     def test_main_with_adapter_evaluates_adapter_documents(self):

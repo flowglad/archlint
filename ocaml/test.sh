@@ -1,0 +1,84 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+TMPDIR="${TMPDIR:-/tmp}/archlint-ocaml-fixture-$$"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+mkdir -p "$TMPDIR/lib" "$TMPDIR/test"
+
+cat > "$TMPDIR/lib/decision.ml" <<'ML'
+(* @archlint.module core
+   @archlint.domain demo.decision *)
+
+let decide x =
+  if x > 0 then `Positive else `Non_positive
+ML
+
+cat > "$TMPDIR/lib/handler.ml" <<'ML'
+(* @archlint.module shell
+   @archlint.domain demo.decision *)
+
+let run path =
+  let _exists = Unix.access path [ Unix.F_OK ] in
+  Decision.decide 1
+ML
+
+cat > "$TMPDIR/test/test_decision.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.decision *)
+
+let suite =
+  [
+    QCheck2.Test.make ~name:"decide total"
+      QCheck2.Gen.(list small_int)
+      (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
+  ]
+ML
+
+eval "$(opam env --switch "$ROOT/../onton" --set-switch --shell=sh)"
+dune build --root "$ROOT/ocaml" >/dev/null
+dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts.json"
+uv run --project "$ROOT" python "$ROOT/evaluate.py" "$TMPDIR/facts.json"
+
+cat > "$TMPDIR/lib/counter.ml" <<'ML'
+(* @archlint.module state
+   @archlint.domain demo.decision *)
+
+module Counter = struct
+  let cell = Atomic.make 0
+end
+
+let read () =
+  Decision.decide (Atomic.get Counter.cell)
+ML
+
+cat > "$TMPDIR/test/test_state.ml" <<'ML'
+(* @archlint.module stateTest
+   @archlint.domain demo.decision *)
+
+let suite =
+  [
+    QCheck2.Test.make ~name:"interleaving"
+      QCheck2.Gen.(list small_int)
+      (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
+  ]
+ML
+
+dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts-state.json"
+uv run --project "$ROOT" python - "$TMPDIR/facts-state.json" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+checks_by_file = {item["path"]: item["propertyChecks"] for item in document["files"]}
+ordinary = [checks for path, checks in checks_by_file.items() if path.endswith("test_decision.ml")][0]
+state = [checks for path, checks in checks_by_file.items() if path.endswith("test_state.ml")][0]
+assert ordinary and ordinary[0]["interleaving"] is False, ordinary
+assert state and state[0]["interleaving"] is True, state
+assert "decide" in state[0]["references"], state
+handler = [item for item in document["files"] if item["path"].endswith("handler.ml")][0]
+assert "Unix" in handler["effectfulIdentifiers"], handler
+counter = [item for item in document["files"] if item["path"].endswith("counter.ml")][0]
+assert counter["sharedState"], counter
+PY
