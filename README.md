@@ -87,7 +87,7 @@ OCaml files use the same tags inside a leading block comment:
    @archlint.domain mail.sync *)
 ```
 
-These tags must appear in the leading file comment block before the package, imports, type declarations, or any other source body. Tags buried later in a file are ignored and should be treated as missing metadata.
+These tags must appear in the leading file comment block before declarations, imports, type definitions, or any other source body. Tags buried later in a file are ignored and should be treated as missing metadata.
 
 Each metadata tag may appear at most once. Duplicating `@archlint.module`, `@archlint.domain`, or `@archlint.exempt-reason` invalidates that field rather than letting the last tag win.
 
@@ -95,7 +95,7 @@ Each metadata tag may appear at most once. Duplicating `@archlint.module`, `@arc
 
 `@archlint.exempt-reason` is required for every exempt module and invalid on non-exempt modules.
 
-`test` and `stateTest` modules must live in test targets. Production module types (`core`, `interface`, `value`, `shell`, and `state`) must not be declared in test targets. Use test modules for test helpers rather than moving production architecture surfaces into test files.
+`test` and `stateTest` modules must live in test scopes. Production module types (`core`, `interface`, `value`, `shell`, and `state`) must not be declared in test scopes. Use test modules for test helpers rather than moving production architecture surfaces into test files.
 
 Domains must be specific enough to make shell-to-core linkage meaningful. Archlint enforces this structurally by limiting how many non-value production modules can participate in one domain within an adapter document; if a domain grows past that bound, split it by responsibility.
 
@@ -103,7 +103,7 @@ Domain names must use lowercase alphanumeric segments separated by `.` or `-`, s
 
 ## Module Types
 
-`core` modules contain pure decision logic. They must declare a non-empty callable decision surface and must not import effectful packages.
+`core` modules contain pure decision logic. They must declare a non-empty callable decision surface and must not import effectful dependencies.
 
 `shell` modules contain effectful handlers. They execute decisions from same-domain `core` modules and should not contain business branching that could have been decided by the pure layer.
 
@@ -115,7 +115,7 @@ Domain names must use lowercase alphanumeric segments separated by `.` or `-`, s
 
 `interface` modules define vocabulary and contracts only. They must not contain concrete business logic or computed values.
 
-`value` modules define inert value types and simple derived properties. They may contain computed properties, but must not contain function or initializer bodies, control flow, import effectful frameworks, own shared mutable state, declare classes, or contain imperative top-level declarations. Branching decisions belong in `core`, where property-test obligations apply.
+`value` modules define inert value types and simple derived values. They may contain derived value bodies, but must not contain function or constructor bodies, control flow, import effectful dependencies, own shared mutable state, or contain imperative top-level declarations. Branching decisions belong in `core`, where property-test obligations apply.
 
 `exempt` modules are narrow escape hatches. Every exemption must declare an allowed reason.
 
@@ -138,8 +138,8 @@ The repository mechanically enforces the decision/handler split by induction:
 11. `stateTest` modules must themselves contain property interleavings that reach same-domain `core` decision APIs; ordinary property tests must use `test`.
 12. Property interleavings may only be emitted by `stateTest` modules. A generated array or slice inside an ordinary `test` module is still just a property input, not an operation-sequence invariant.
 13. `interface` modules define vocabulary and contracts only; they must not contain concrete business logic or computed values.
-14. `value` modules are non-effectful value vocabulary with optional simple derived properties; they must not become service, framework-boundary, state-owner, branching, or callable decision code.
-15. `core` and `value` modules must not structurally reference same-package implementation surfaces declared by `shell`, `state`, or `exempt` modules.
+14. `value` modules are non-effectful value vocabulary with optional simple derived properties; they must not become service, effect-boundary, state-owner, branching, or callable decision code.
+15. `core` and `value` modules must not structurally reference same-domain implementation surfaces declared by `shell`, `state`, or `exempt` modules.
 
 Handlers should not satisfy conformance by importing or referencing an unrelated decision module. If a shell can pass by referencing a core that is not part of its real workflow, the domain is too broad and should be split. The evaluator treats domain breadth as a structural property instead of banning particular domain names.
 
@@ -155,19 +155,18 @@ State coverage is deliberately structural. A `stateTest` produces interleaving `
 
 ## Exemptions
 
-Allowed exemption reasons are intentionally narrow:
+Allowed exemption reasons are intentionally narrow and generic:
 
-- `app-entry`: app launch glue; must not contain service logic
-- `effect-facade`: thin service facade over effect boundaries; must not touch effectful APIs directly
-- `framework-boundary`: direct framework calls that cannot be represented as an inert interface; must actually touch effectful APIs
-- `principal-context`: principal propagation glue; must not touch effectful APIs
-- `prototype-data`: static demo data; must not touch effectful APIs or declare classes
-- `test-fixture`: intentionally failing or fake support types; must not touch effectful APIs or declare classes
-- `view-adapter`: view composition and UI state glue; must not declare classes
+- `entrypoint`: runtime entry glue; must not contain decision logic
+- `effect-boundary`: direct effect API calls that cannot be represented as an inert interface; must actually touch effectful APIs
+- `effect-facade`: thin facade over effect boundaries; must not touch effectful APIs directly
+- `pure-glue`: non-effectful wiring or propagation glue; must not touch effectful APIs or contain decision control flow
+- `static-data`: inert static/sample data; must not touch effectful APIs or contain behavior
+- `test-support`: fake or intentionally failing support types; must not touch effectful APIs
 
-When a conformance test fails, prefer changing the application architecture over weakening the rule. Narrow exceptions are acceptable for view-adapter or framework boundary code that does not fit the current model, but they should be explicit in the checker and justified by file shape.
+When a conformance test fails, prefer changing the application architecture over weakening the rule. Narrow exceptions are acceptable for code that does not fit the current functional-core/imperative-shell model, but they should be explicit in the checker and justified by file shape.
 
-Do not grow exemption reasons into hidden module types. A reason-specific rule may reject an implausible exemption shape, such as class declarations inside `view-adapter` or `framework-boundary` without effectful APIs. It should not impose positive architectural relationships. That promotion threshold is exactly why inert behavioral values were moved from `exempt` into the `value` module type.
+Do not grow exemption reasons into hidden module types. A reason-specific rule may reject an implausible exemption shape, such as `effect-boundary` without effectful APIs or `pure-glue` with decision control flow. It should not impose positive architectural relationships. That promotion threshold is exactly why inert behavioral values were moved from `exempt` into the `value` module type.
 
 ## Fact Schema
 
@@ -186,8 +185,7 @@ Each file fact includes:
 ```json
 {
   "path": "/absolute/path/to/source",
-  "package": "package-or-target",
-  "testTarget": "",
+  "testScope": "",
   "metadata": {
     "moduleType": "core",
     "domain": "mail.sync",
@@ -211,10 +209,9 @@ Each file fact includes:
   ],
   "interfaceLogicEvidence": {
     "functionBodies": [],
-    "initializerBodies": [],
-    "computedProperties": [],
+    "constructorBodies": [],
+    "derivedValueBodies": [],
     "controlFlow": [],
-    "classDeclarations": [],
     "imperativeDeclarations": []
   }
 }
@@ -222,13 +219,13 @@ Each file fact includes:
 
 Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, and whether that property is an operation-sequence `interleaving`. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage and interleaving coverage from `propertyChecks`, then compares interleaving references against same-domain `state` module `apiReferences` and same-domain `core` `decisionSurface`; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
 
-Effect evidence is also normalized. Adapters own language-specific classification of effectful packages, frameworks, and framework types, but they emit the matched values as `effectfulImports` and `effectfulIdentifiers`. The evaluator derives booleans from those structured lists. Do not add adapter-emitted `hasEffectful...` booleans.
+Effect evidence is also normalized. Adapters own language-specific classification of effectful dependencies, frameworks, and framework types, but they emit the matched values as `effectfulImports` and `effectfulIdentifiers`. The evaluator derives booleans from those structured lists. Do not add adapter-emitted `hasEffectful...` booleans.
 
 Shared mutable state evidence follows the same shape. Adapters own language-specific detection, but emit `sharedState` entries with a `kind` and structural `references`, such as `go-sync`, `swift-actor-var`, or `swift-database-queue`. The evaluator derives `has shared mutable state` from whether that list is non-empty. Do not add adapter-emitted `hasSharedMutableState` booleans.
 
-Interface and value logic evidence is normalized too. Adapters emit `interfaceLogicEvidence` lists naming the declarations or syntax classes that caused the evidence, such as `functionBodies`, `computedProperties`, `classDeclarations`, or `controlFlow`; the evaluator derives the corresponding `has...` checks from whether those lists are empty. Do not add adapter-emitted `hasFunctionBodies`-style booleans.
+Interface and value logic evidence is normalized too. Adapters emit `interfaceLogicEvidence` lists naming the declarations or syntax classes that caused the evidence, such as `functionBodies`, `derivedValueBodies`, `controlFlow`, or `imperativeDeclarations`; the evaluator derives the corresponding `has...` checks from whether those lists are empty. Do not add adapter-emitted `hasFunctionBodies`-style booleans.
 
-Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `initializerBodies`, `computedProperties`, and `classDeclarations` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`. Interleaving references are not emitted as a separate list; they are derived from checks where `interleaving` is true, which makes interleavings imply ordinary property-test evidence by construction.
+Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `constructorBodies`, and `derivedValueBodies` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`. Interleaving references are not emitted as a separate list; they are derived from checks where `interleaving` is true, which makes interleavings imply ordinary property-test evidence by construction.
 
 Fact emission should also avoid stringly typed shortcuts. Adapters should report structural evidence from language parsers or dependency APIs: declarations, imports, member accesses, property-wrapper attributes, call expressions, exported APIs, and generated-input shapes. They should not infer facts from filename prose, comments, test names, or suffixes when the language ecosystem exposes a stronger structural signal. Adapters also should not emit policy violation text; they emit facts, and the shared evaluator owns rule messages.
 
@@ -237,6 +234,6 @@ Property-test evidence is tied to known property-testing API calls, not to a tes
 The fact schema is intentionally strict:
 
 - `metadata.moduleType` and `metadata.exemptReason` must be known schema enum values, with `""` reserved for missing source tags
-- `path` and `package` must be non-empty strings
+- `path` must be a non-empty string
 - list fields must contain unique, non-empty strings
 - unknown fields are rejected

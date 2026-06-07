@@ -33,8 +33,7 @@ type architectureFactDocument struct {
 
 type architectureFileFact struct {
 	Path                   string                        `json:"path"`
-	Package                string                        `json:"package"`
-	TestTarget             string                        `json:"testTarget"`
+	TestScope              string                        `json:"testScope"`
 	Metadata               architectureMetadataFact      `json:"metadata"`
 	Imports                []string                      `json:"imports"`
 	Identifiers            []string                      `json:"identifiers"`
@@ -68,10 +67,9 @@ type architectureMetadataFact struct {
 
 type architectureInterfaceEvidence struct {
 	FunctionBodies         []string `json:"functionBodies"`
-	InitializerBodies      []string `json:"initializerBodies"`
-	ComputedProperties     []string `json:"computedProperties"`
+	ConstructorBodies      []string `json:"constructorBodies"`
+	DerivedValueBodies     []string `json:"derivedValueBodies"`
 	ControlFlow            []string `json:"controlFlow"`
-	ClassDeclarations      []string `json:"classDeclarations"`
 	ImperativeDeclarations []string `json:"imperativeDeclarations"`
 }
 
@@ -229,12 +227,9 @@ func goArchitectureFileFact(path string) (architectureFileFact, []violation) {
 			propertyEvidence.checks[index].interleaving = false
 		}
 	}
-	packagePath := filepath.Dir(path)
-
-	return architectureFileFact{
-		Path:                   path,
-		Package:                packagePath,
-		TestTarget:             goTestTarget(path),
+		return architectureFileFact{
+			Path:                   path,
+			TestScope:              goTestScope(path),
 		Metadata:               architectureMetadataForGo(metadata),
 		Imports:                imports,
 		Identifiers:            setToSortedSlice(identifiers),
@@ -259,7 +254,7 @@ func architectureMetadataForGo(metadata moduleMetadata) architectureMetadataFact
 	}
 }
 
-func goTestTarget(path string) string {
+func goTestScope(path string) string {
 	if !strings.HasSuffix(path, "_test.go") {
 		return ""
 	}
@@ -659,10 +654,9 @@ func goInterfaceLogicEvidence(syntaxFile *ast.File) architectureInterfaceEvidenc
 	}
 	return architectureInterfaceEvidence{
 		FunctionBodies:         setToSortedSlice(functionBodies),
-		InitializerBodies:      []string{},
-		ComputedProperties:     []string{},
+		ConstructorBodies:      []string{},
+		DerivedValueBodies:     []string{},
 		ControlFlow:            goControlFlowEvidence(syntaxFile),
-		ClassDeclarations:      []string{},
 		ImperativeDeclarations: setToSortedSlice(imperativeDeclarations),
 	}
 }

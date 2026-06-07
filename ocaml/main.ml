@@ -17,17 +17,15 @@ type shared_state = { kind : string; references : string list }
 
 type interface_logic_evidence = {
   function_bodies : string list;
-  initializer_bodies : string list;
-  computed_properties : string list;
+  constructor_bodies : string list;
+  derived_value_bodies : string list;
   control_flow : string list;
-  class_declarations : string list;
   imperative_declarations : string list;
 }
 
 type file_fact = {
   path : string;
-  package : string;
-  test_target : string;
+  test_scope : string;
   metadata : metadata;
   imports : string list;
   identifiers : string list;
@@ -61,10 +59,9 @@ type facts = {
   mutable property_checks : property_check list;
   mutable function_references : StringSet.t StringMap.t;
   mutable function_bodies : StringSet.t;
-  mutable initializer_bodies : StringSet.t;
-  mutable computed_properties : StringSet.t;
+  mutable constructor_bodies : StringSet.t;
+  mutable derived_value_bodies : StringSet.t;
   mutable control_flow : StringSet.t;
-  mutable class_declarations : StringSet.t;
   mutable imperative_declarations : StringSet.t;
 }
 
@@ -82,10 +79,9 @@ let empty_facts () =
     property_checks = [];
     function_references = StringMap.empty;
     function_bodies = StringSet.empty;
-    initializer_bodies = StringSet.empty;
-    computed_properties = StringSet.empty;
+    constructor_bodies = StringSet.empty;
+    derived_value_bodies = StringSet.empty;
     control_flow = StringSet.empty;
-    class_declarations = StringSet.empty;
     imperative_declarations = StringSet.empty;
   }
 
@@ -617,7 +613,7 @@ let interface_exports_for_file path =
 let path_has_segment path segment =
   String.split_on_char Filename.dir_sep.[0] path |> List.exists (( = ) segment)
 
-let infer_test_target root path =
+let infer_test_scope root path =
   let relative =
     if String.starts_with ~prefix:root path then
       String.sub path (String.length root) (String.length path - String.length root)
@@ -626,9 +622,6 @@ let infer_test_target root path =
   if path_has_segment relative "test" || path_has_segment relative "lib_test" then
     basename_without_extension path
   else ""
-
-let infer_package path =
-  module_name_of_path path
 
 let json_string_list values =
   `List (List.map (fun value -> `String value) (sorted_unique values))
@@ -659,10 +652,9 @@ let interface_logic_evidence_to_json (evidence : interface_logic_evidence) =
   `Assoc
     [
       ("functionBodies", json_string_list evidence.function_bodies);
-      ("initializerBodies", json_string_list evidence.initializer_bodies);
-      ("computedProperties", json_string_list evidence.computed_properties);
+      ("constructorBodies", json_string_list evidence.constructor_bodies);
+      ("derivedValueBodies", json_string_list evidence.derived_value_bodies);
       ("controlFlow", json_string_list evidence.control_flow);
-      ("classDeclarations", json_string_list evidence.class_declarations);
       ("imperativeDeclarations", json_string_list evidence.imperative_declarations);
     ]
 
@@ -670,8 +662,7 @@ let file_fact_to_json fact =
   `Assoc
     [
       ("path", `String fact.path);
-      ("package", `String fact.package);
-      ("testTarget", `String fact.test_target);
+      ("testScope", `String fact.test_scope);
       ("metadata", metadata_to_json fact.metadata);
       ("imports", json_string_list fact.imports);
       ("identifiers", json_string_list fact.identifiers);
@@ -714,8 +705,7 @@ let source_fact ~root ~interfaces path =
   in
   {
     path;
-    package = infer_package path;
-    test_target = infer_test_target root path;
+    test_scope = infer_test_scope root path;
     metadata;
     imports = set_to_list facts.imports;
     identifiers = set_to_list facts.identifiers;
@@ -735,10 +725,9 @@ let source_fact ~root ~interfaces path =
     interface_logic_evidence =
       {
         function_bodies = set_to_list facts.function_bodies;
-        initializer_bodies = set_to_list facts.initializer_bodies;
-        computed_properties = set_to_list facts.computed_properties;
+        constructor_bodies = set_to_list facts.constructor_bodies;
+        derived_value_bodies = set_to_list facts.derived_value_bodies;
         control_flow = set_to_list facts.control_flow;
-        class_declarations = set_to_list facts.class_declarations;
         imperative_declarations = set_to_list facts.imperative_declarations;
       };
   }

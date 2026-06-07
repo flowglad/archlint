@@ -401,8 +401,8 @@ assert_fails_with "$duplicate_domain_metadata_fixture" "module must declare @arc
 duplicate_exempt_reason_metadata_fixture="$(new_fixture duplicate-exempt-reason-metadata)"
 cat > "$duplicate_exempt_reason_metadata_fixture/apps/ios/MailApp/Backend/MailPrototypeData.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason prototype-data
-// @archlint.exempt-reason test-fixture
+// @archlint.exempt-reason static-data
+// @archlint.exempt-reason test-support
 enum MailPrototypeData {
   static let account = "demo"
 }
@@ -417,7 +417,7 @@ cat > "$test_module_in_production_fixture/apps/ios/MailApp/Backend/RandomTests.s
 struct RandomTests {}
 EOF
 assert_fails_with "$test_module_in_production_fixture" \
-  "test module must be declared in a test target"
+  "test module must be declared in a test scope"
 
 malformed_domain_fixture="$(new_fixture malformed-domain)"
 cat > "$malformed_domain_fixture/apps/ios/MailApp/Backend/RandomDecider.swift" <<'EOF'
@@ -443,7 +443,7 @@ enum RandomDecider {
 }
 EOF
 assert_fails_with "$production_module_in_test_fixture" \
-  "production module must not be declared in a test target"
+  "production module must not be declared in a test scope"
 
 missing_exempt_reason_fixture="$(new_fixture missing-exempt-reason)"
 cat > "$missing_exempt_reason_fixture/apps/ios/MailApp/Backend/InstallationCredential.swift" <<'EOF'
@@ -459,7 +459,7 @@ exempt_domain_fixture="$(new_fixture exempt-domain)"
 cat > "$exempt_domain_fixture/apps/ios/MailApp/Backend/MailPrototypeData.swift" <<'EOF'
 // @archlint.module exempt
 // @archlint.domain mail.sync
-// @archlint.exempt-reason prototype-data
+// @archlint.exempt-reason static-data
 enum MailPrototypeData {
   static let account = "demo"
 }
@@ -481,7 +481,7 @@ exempt_reason_outside_exempt_fixture="$(new_fixture exempt-reason-outside-exempt
 cat > "$exempt_reason_outside_exempt_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
 // @archlint.module interface
 // @archlint.domain backend.http
-// @archlint.exempt-reason prototype-data
+// @archlint.exempt-reason static-data
 struct AddAccountRequest {
   let displayName: String
 }
@@ -489,11 +489,11 @@ EOF
 assert_fails_with "$exempt_reason_outside_exempt_fixture" \
   "@archlint.exempt-reason is only valid on exempt modules"
 
-app_entry_exemption_fixture="$(new_fixture app-entry-exemption)"
-mkdir -p "$app_entry_exemption_fixture/apps/ios/MailApp/App"
-cat > "$app_entry_exemption_fixture/apps/ios/MailApp/App/MailApp.swift" <<'EOF'
+entrypoint_exemption_fixture="$(new_fixture entrypoint-exemption)"
+mkdir -p "$entrypoint_exemption_fixture/apps/ios/MailApp/App"
+cat > "$entrypoint_exemption_fixture/apps/ios/MailApp/App/MailApp.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason app-entry
+// @archlint.exempt-reason entrypoint
 import SwiftUI
 
 @main
@@ -505,36 +505,32 @@ struct MailApp: App {
   }
 }
 EOF
-assert_passes "$app_entry_exemption_fixture"
+assert_passes "$entrypoint_exemption_fixture"
 
-view_adapter_exemption_fixture="$(new_fixture view-adapter-exemption)"
-mkdir -p "$view_adapter_exemption_fixture/apps/ios/MailApp/Features/Mailboxes"
-cat > "$view_adapter_exemption_fixture/apps/ios/MailApp/Features/Mailboxes/MailboxListView.swift" <<'EOF'
+pure_glue_exemption_fixture="$(new_fixture pure-glue-exemption)"
+mkdir -p "$pure_glue_exemption_fixture/apps/ios/MailApp/Features/Mailboxes"
+cat > "$pure_glue_exemption_fixture/apps/ios/MailApp/Features/Mailboxes/MailboxRoute.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason view-adapter
-import SwiftUI
+// @archlint.exempt-reason pure-glue
 
-struct MailboxListView: View {
-  let title: String
-
-  var body: some View {
-    Text(title)
-  }
+struct MailboxRoute {
+  let accountID: String
+  let mailboxID: String
 }
 EOF
-assert_passes "$view_adapter_exemption_fixture"
+assert_passes "$pure_glue_exemption_fixture"
 
-framework_boundary_exemption_fixture="$(new_fixture framework-boundary-exemption)"
-cat > "$framework_boundary_exemption_fixture/apps/ios/MailApp/Backend/SystemKeychainClient.swift" <<'EOF'
+effect_boundary_exemption_fixture="$(new_fixture effect-boundary-exemption)"
+cat > "$effect_boundary_exemption_fixture/apps/ios/MailApp/Backend/SystemKeychainClient.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason framework-boundary
+// @archlint.exempt-reason effect-boundary
 import Security
 
 struct SystemKeychainClient {
   let keychainClass: CFString
 }
 EOF
-assert_passes "$framework_boundary_exemption_fixture"
+assert_passes "$effect_boundary_exemption_fixture"
 
 effect_facade_exemption_fixture="$(new_fixture effect-facade-exemption)"
 cat > "$effect_facade_exemption_fixture/apps/ios/MailApp/Backend/MailBackendClient.swift" <<'EOF'
@@ -546,26 +542,26 @@ protocol MailBackendClient {
 EOF
 assert_passes "$effect_facade_exemption_fixture"
 
-prototype_data_exemption_fixture="$(new_fixture prototype-data-exemption)"
-mkdir -p "$prototype_data_exemption_fixture/apps/ios/MailApp/Domain"
-cat > "$prototype_data_exemption_fixture/apps/ios/MailApp/Domain/MailPrototypeData.swift" <<'EOF'
+static_data_exemption_fixture="$(new_fixture static-data-exemption)"
+mkdir -p "$static_data_exemption_fixture/apps/ios/MailApp/Domain"
+cat > "$static_data_exemption_fixture/apps/ios/MailApp/Domain/MailStaticData.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason prototype-data
-enum MailPrototypeData {
+// @archlint.exempt-reason static-data
+enum MailStaticData {
   static let account = "demo"
 }
 EOF
-assert_passes "$prototype_data_exemption_fixture"
+assert_passes "$static_data_exemption_fixture"
 
-test_fixture_exemption_fixture="$(new_fixture test-fixture-exemption)"
-cat > "$test_fixture_exemption_fixture/apps/ios/MailAppTests/FailingMailSyncStateStore.swift" <<'EOF'
+test_support_exemption_fixture="$(new_fixture test-support-exemption)"
+cat > "$test_support_exemption_fixture/apps/ios/MailAppTests/FailingMailSyncStateStore.swift" <<'EOF'
 // @archlint.module exempt
-// @archlint.exempt-reason test-fixture
+// @archlint.exempt-reason test-support
 struct FailingMailSyncStateStore {
   let reason: String
 }
 EOF
-assert_passes "$test_fixture_exemption_fixture"
+assert_passes "$test_support_exemption_fixture"
 
 generic_domain_fixture="$(new_fixture generic-domain)"
 for index in $(seq 1 17); do
@@ -593,7 +589,7 @@ struct AddAccountRequest {
 }
 EOF
 assert_fails_with "$interface_with_logic_fixture" \
-  "interface module must not contain computed properties"
+  "interface module must not contain derived value bodies"
 
 value_with_computed_property_fixture="$(new_fixture value-with-computed-property)"
 cat > "$value_with_computed_property_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'

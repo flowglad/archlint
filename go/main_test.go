@@ -293,7 +293,7 @@ func Method() string {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"core module must not import effectful packages",
+		"core module must not import effectful dependencies",
 		"effectful identifiers may only appear in shell, state, interface, test, stateTest, or exempt modules",
 	})
 }
@@ -416,7 +416,7 @@ func TestLintBackendArchitectureRejectsExemptDomain(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/prototype.go": `// @archlint.module exempt
 // @archlint.domain mail
-// @archlint.exempt-reason prototype-data
+// @archlint.exempt-reason static-data
 package mail
 
 var DemoAccount = "demo"
@@ -449,7 +449,7 @@ func TestLintBackendArchitectureRejectsExemptReasonOutsideExemptModule(t *testin
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/types.go": `// @archlint.module interface
 // @archlint.domain mail
-// @archlint.exempt-reason prototype-data
+// @archlint.exempt-reason static-data
 package mail
 
 type State struct{}
@@ -464,7 +464,7 @@ type State struct{}
 func TestLintBackendArchitectureAcceptsPrincipalContextExemption(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/principal/context.go": `// @archlint.module exempt
-// @archlint.exempt-reason principal-context
+// @archlint.exempt-reason pure-glue
 package principal
 
 import "context"
@@ -512,7 +512,7 @@ func notADecision() string {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"core module must not import effectful packages",
+		"core module must not import effectful dependencies",
 		"core module must declare a callable decision API",
 		"core module must have a same-domain test or stateTest module",
 	})
@@ -1392,8 +1392,8 @@ func DecideState() bool {
 func TestLintBackendArchitectureRejectsDuplicateExemptReasonMetadata(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/prototype.go": `// @archlint.module exempt
-// @archlint.exempt-reason prototype-data
-// @archlint.exempt-reason test-fixture
+// @archlint.exempt-reason static-data
+// @archlint.exempt-reason test-support
 package mail
 
 var DemoAccount = "demo"
@@ -1418,7 +1418,7 @@ func helper() bool {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"test module must be declared in a test target",
+		"test module must be declared in a test scope",
 	})
 }
 
@@ -1452,7 +1452,7 @@ func DecideState() bool {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"production module must not be declared in a test target",
+		"production module must not be declared in a test scope",
 	})
 }
 

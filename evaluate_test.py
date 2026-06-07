@@ -15,8 +15,7 @@ def source_file(**overrides):
     overridden_keys = set(overrides)
     data = {
         "path": "/repo/Core.swift",
-        "package": "MailApp",
-        "testTarget": "",
+        "testScope": "",
         "metadata": {
             "moduleType": "core",
             "domain": "mail.sync",
@@ -87,7 +86,7 @@ class EvaluateTests(unittest.TestCase):
     def test_property_test_references_must_be_api_references(self):
         source = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=[],
             propertyChecks=[property_check(["decideSync"])],
@@ -166,7 +165,7 @@ class EvaluateTests(unittest.TestCase):
         core = source_file(path="/repo/Core.swift")
         unrelated_test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["somethingElse"],
             apiReferences=["somethingElse"],
@@ -184,7 +183,7 @@ class EvaluateTests(unittest.TestCase):
         core = source_file(path="/repo/Core.swift")
         linked_test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["decideSync"],
             apiReferences=["decideSync"],
@@ -198,7 +197,6 @@ class EvaluateTests(unittest.TestCase):
     def test_core_module_exhaustive_property_surface_is_structural(self):
         core = source_file(
             path="/repo/Core.ml",
-            package="Core",
             identifiers=["decideSync", "helper"],
             apiReferences=["decideSync", "helper"],
             decisionSurface=["decideSync", "helper"],
@@ -207,8 +205,7 @@ class EvaluateTests(unittest.TestCase):
         )
         linked_test = source_file(
             path="/repo/Core_test.ml",
-            package="CoreTest",
-            testTarget="CoreTest",
+            testScope="CoreTest",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["decideSync"],
             apiReferences=["decideSync"],
@@ -283,7 +280,7 @@ class EvaluateTests(unittest.TestCase):
         )
         test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=["decideSync"],
             propertyChecks=[property_check(["decideSync"])],
@@ -318,7 +315,7 @@ class EvaluateTests(unittest.TestCase):
         )
         test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=["decideSync"],
             propertyChecks=[property_check(["decideSync"])],
@@ -352,7 +349,7 @@ class EvaluateTests(unittest.TestCase):
         core = source_file(path="/repo/Core.swift")
         test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["decideSync"],
             apiReferences=[],
@@ -370,7 +367,7 @@ class EvaluateTests(unittest.TestCase):
         core = source_file(path="/repo/Core.swift")
         test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=["decideSync"],
             propertyChecks=[property_check()],
@@ -441,23 +438,36 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_dependency_direction_is_package_scoped(self):
+    def test_dependency_direction_is_domain_scoped(self):
         core = source_file(
             path="/repo/auth/Core.go",
-            package="repo/auth",
             metadata={"moduleType": "core", "domain": "auth.installation", "exemptReason": ""},
             apiReferences=["Principal"],
         )
         exempt = source_file(
             path="/repo/principal/Context.go",
-            package="repo/principal",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             decisionReferences=["Principal"],
         )
 
         violations = evaluate.evaluate([core, exempt])
 
         self.assertNotIn(
+            "core module must not reference implementation APIs: Principal",
+            [violation.message for violation in violations],
+        )
+
+        same_domain_implementation = source_file(
+            path="/repo/auth/Context.go",
+            metadata={"moduleType": "shell", "domain": "auth.installation", "exemptReason": ""},
+            decisionReferences=["Principal"],
+            effectfulIdentifiers=["EffectType"],
+            identifiers=["Principal", "EffectType"],
+        )
+
+        violations = evaluate.evaluate([core, same_domain_implementation])
+
+        self.assertIn(
             "core module must not reference implementation APIs: Principal",
             [violation.message for violation in violations],
         )
@@ -499,7 +509,7 @@ class EvaluateTests(unittest.TestCase):
         )
         unrelated_interleaving_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["UnrelatedDecider"],
             propertyChecks=[property_check(["UnrelatedDecider"], interleaving=True)],
@@ -559,7 +569,7 @@ class EvaluateTests(unittest.TestCase):
         )
         linked_interleaving_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
             propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
@@ -586,7 +596,7 @@ class EvaluateTests(unittest.TestCase):
     def test_property_interleavings_may_only_appear_in_state_test_modules(self):
         test = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             propertyChecks=[property_check(["decideSync"], interleaving=True)],
         )
@@ -610,7 +620,7 @@ class EvaluateTests(unittest.TestCase):
         )
         state_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["Date"],
             propertyChecks=[property_check(["Date"], interleaving=True)],
@@ -635,7 +645,7 @@ class EvaluateTests(unittest.TestCase):
         )
         state_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
             propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
@@ -671,7 +681,7 @@ class EvaluateTests(unittest.TestCase):
         )
         state_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
             propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
@@ -697,7 +707,7 @@ class EvaluateTests(unittest.TestCase):
         )
         state_test = source_file(
             path="/repo/StoreTests.swift",
-            testTarget="StoreTests",
+            testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
         )
@@ -731,10 +741,9 @@ class EvaluateTests(unittest.TestCase):
             identifiers=["makeValue", "init", "computed", "Widget"],
             interfaceLogicEvidence={
                 "functionBodies": ["makeValue"],
-                "initializerBodies": ["init"],
-                "computedProperties": ["computed"],
+                "constructorBodies": ["init"],
+                "derivedValueBodies": ["computed"],
                 "controlFlow": ["if"],
-                "classDeclarations": ["Widget"],
                 "imperativeDeclarations": ["var"],
             },
         )
@@ -744,51 +753,49 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "interface module must not contain function bodies",
-                "interface module must not contain initializer bodies",
-                "interface module must not contain computed properties",
+                "interface module must not contain constructor bodies",
+                "interface module must not contain derived value bodies",
                 "interface module must not contain control flow",
-                "interface module must not declare classes",
                 "interface module may only declare imports, types, and constants",
             ],
             [violation.message for violation in violations],
         )
 
-    def test_view_adapter_exemption_must_not_declare_classes(self):
-        view_adapter = source_file(
-            path="/repo/View.swift",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
-            identifiers=["ViewController"],
+    def test_pure_glue_exemption_must_not_contain_decision_control_flow(self):
+        pure_glue = source_file(
+            path="/repo/Glue.ml",
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             interfaceLogicEvidence={
                 **empty_interface_logic_evidence(),
-                "classDeclarations": ["ViewController"],
+                "controlFlow": ["match"],
             },
         )
 
-        violations = evaluate.evaluate([view_adapter])
+        violations = evaluate.evaluate([pure_glue])
 
         self.assertIn(
-            "view-adapter exemption must not declare classes",
+            "pure-glue exemption must not contain decision control flow",
             [violation.message for violation in violations],
         )
 
-    def test_framework_boundary_exemption_must_touch_effectful_api(self):
+    def test_effect_boundary_exemption_must_touch_effectful_api(self):
         boundary = source_file(
             path="/repo/Boundary.swift",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "framework-boundary"},
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "effect-boundary"},
             imports=[],
         )
 
         violations = evaluate.evaluate([boundary])
 
         self.assertIn(
-            "framework-boundary exemption must touch effectful APIs",
+            "effect-boundary exemption must touch effectful APIs",
             [violation.message for violation in violations],
         )
 
-    def test_framework_boundary_exemption_may_own_runtime_shared_state(self):
+    def test_effect_boundary_exemption_may_own_runtime_shared_state(self):
         boundary = source_file(
             path="/repo/Boundary.ml",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "framework-boundary"},
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "effect-boundary"},
             identifiers=["EffectType", "cache"],
             effectfulIdentifiers=["EffectType"],
             sharedState=[{"kind": "runtime-cache", "references": ["cache"]}],
@@ -813,33 +820,33 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_principal_context_exemption_must_not_touch_effectful_api(self):
-        principal_context = source_file(
-            path="/repo/Context.swift",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
+    def test_pure_glue_exemption_must_not_touch_effectful_api(self):
+        pure_glue = source_file(
+            path="/repo/Context.ml",
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             imports=["EffectFramework"],
             effectfulImports=["EffectFramework"],
         )
 
-        violations = evaluate.evaluate([principal_context])
+        violations = evaluate.evaluate([pure_glue])
 
         self.assertIn(
-            "principal-context exemption must not touch effectful APIs",
+            "pure-glue exemption must not touch effectful APIs",
             [violation.message for violation in violations],
         )
 
-    def test_prototype_data_exemption_must_not_touch_effectful_api(self):
-        prototype = source_file(
-            path="/repo/Prototype.go",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "prototype-data"},
+    def test_static_data_exemption_must_not_touch_effectful_api(self):
+        static_data = source_file(
+            path="/repo/Data.go",
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "static-data"},
             imports=["effect.boundary"],
             effectfulImports=["effect.boundary"],
         )
 
-        violations = evaluate.evaluate([prototype])
+        violations = evaluate.evaluate([static_data])
 
         self.assertIn(
-            "prototype-data exemption must not touch effectful APIs",
+            "static-data exemption must not touch effectful APIs",
             [violation.message for violation in violations],
         )
 
@@ -847,15 +854,15 @@ class EvaluateTests(unittest.TestCase):
         valid_exemptions = [
             source_file(
                 path="/repo/MailApp.swift",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "app-entry"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "entrypoint"},
             ),
             source_file(
                 path="/repo/View.swift",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             ),
             source_file(
                 path="/repo/Boundary.swift",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "framework-boundary"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "effect-boundary"},
                 imports=["EffectFramework"],
                 effectfulImports=["EffectFramework"],
             ),
@@ -865,15 +872,15 @@ class EvaluateTests(unittest.TestCase):
             ),
             source_file(
                 path="/repo/Context.go",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             ),
             source_file(
                 path="/repo/Prototype.swift",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "prototype-data"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "static-data"},
             ),
             source_file(
                 path="/repo/Fixture.swift",
-                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "test-fixture"},
+                metadata={"moduleType": "exempt", "domain": "", "exemptReason": "test-support"},
             ),
         ]
 
@@ -882,20 +889,20 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual([], violations)
 
     def test_exemption_admissibility_does_not_make_exemption_a_domain_module_type(self):
-        view_adapter = source_file(
-            path="/repo/View.swift",
-            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
+        pure_glue = source_file(
+            path="/repo/Glue.ml",
+            metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
             apiReferences=[],
         )
 
-        violations = evaluate.evaluate([view_adapter])
+        violations = evaluate.evaluate([pure_glue])
 
         self.assertEqual([], violations)
 
     def test_exempt_module_must_not_declare_domain(self):
         exempt = source_file(
             path="/repo/View.swift",
-            metadata={"moduleType": "exempt", "domain": "mail.sync", "exemptReason": "view-adapter"},
+            metadata={"moduleType": "exempt", "domain": "mail.sync", "exemptReason": "pure-glue"},
         )
 
         violations = evaluate.evaluate([exempt])
@@ -905,7 +912,7 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_test_module_must_be_declared_in_test_target(self):
+    def test_test_module_must_be_declared_in_test_scope(self):
         test_module = source_file(
             path="/repo/Production.swift",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
@@ -914,7 +921,7 @@ class EvaluateTests(unittest.TestCase):
         violations = evaluate.evaluate([test_module])
 
         self.assertIn(
-            "test module must be declared in a test target",
+            "test module must be declared in a test scope",
             [violation.message for violation in violations],
         )
 
@@ -931,15 +938,15 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_production_module_must_not_be_declared_in_test_target(self):
+    def test_production_module_must_not_be_declared_in_test_scope(self):
         production_module = source_file(
             path="/repo/CoreTests.swift",
-            testTarget="CoreTests",
+            testScope="CoreTests",
             metadata={"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
         )
         test_module = source_file(
             path="/repo/ActualTests.swift",
-            testTarget="ActualTests",
+            testScope="ActualTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             propertyChecks=[property_check(["decideSync"])],
         )
@@ -947,7 +954,7 @@ class EvaluateTests(unittest.TestCase):
         violations = evaluate.evaluate([production_module, test_module])
 
         self.assertIn(
-            "production module must not be declared in a test target",
+            "production module must not be declared in a test scope",
             [violation.message for violation in violations],
         )
 
@@ -988,7 +995,7 @@ class EvaluateTests(unittest.TestCase):
         files.extend(
             source_file(
                 path=f"/repo/Domain/File{index}Tests.swift",
-                testTarget=f"File{index}Tests",
+                testScope=f"File{index}Tests",
                 metadata={"moduleType": "test", "domain": "bounded.domain", "exemptReason": ""},
                 decisionSurface=[],
                 propertyTestSurface=[],
@@ -1049,7 +1056,7 @@ class EvaluateTests(unittest.TestCase):
             evaluate.VALID_MODULE_TYPES,
         )
 
-    def test_value_module_allows_computed_properties_but_rejects_callable_bodies(self):
+    def test_value_module_allows_derived_value_bodies_but_rejects_callable_bodies(self):
         value = source_file(
             path="/repo/Value.swift",
             metadata={"moduleType": "value", "domain": "mail.sync", "exemptReason": ""},
@@ -1057,9 +1064,8 @@ class EvaluateTests(unittest.TestCase):
             interfaceLogicEvidence={
                 **empty_interface_logic_evidence(),
                 "functionBodies": ["makeValue"],
-                "computedProperties": ["computed"],
+                "derivedValueBodies": ["computed"],
                 "controlFlow": ["if"],
-                "classDeclarations": ["Widget"],
             },
         )
 
@@ -1068,7 +1074,6 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(
             [
                 evaluate.Violation("/repo/Value.swift", "value module must not contain function bodies"),
-                evaluate.Violation("/repo/Value.swift", "value module must not declare classes"),
                 evaluate.Violation("/repo/Value.swift", "value module must not contain control flow"),
             ],
             violations,
@@ -1159,13 +1164,6 @@ class EvaluateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"\$\.files\[0\]\.path"):
             evaluate.parse_fact_document(document)
 
-    def test_parse_fact_document_rejects_empty_packages(self):
-        document = valid_fact_document()
-        document["files"][0]["package"] = ""
-
-        with self.assertRaisesRegex(ValueError, r"\$\.files\[0\]\.package"):
-            evaluate.parse_fact_document(document)
-
     def test_parse_fact_document_rejects_duplicate_list_evidence(self):
         document = valid_fact_document()
         document["files"][0]["identifiers"] = ["decideSync", "decideSync"]
@@ -1190,7 +1188,6 @@ class EvaluateTests(unittest.TestCase):
     def test_evaluate_adapters_evaluates_each_adapter_document_independently(self):
         go_core = source_file(
             path="/repo/apps/backend/internal/mail/decision.go",
-            package="iosmail/backend/internal/mail",
             metadata={"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["DecideSync"],
             apiReferences=["DecideSync"],
@@ -1200,8 +1197,7 @@ class EvaluateTests(unittest.TestCase):
         )
         swift_test = source_file(
             path="/repo/apps/ios/MailAppTests/MailDeciderTests.swift",
-            package="MailAppTests",
-            testTarget="MailDeciderTests",
+            testScope="MailDeciderTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["DecideSync"],
             apiReferences=["DecideSync"],
@@ -1239,8 +1235,7 @@ class EvaluateTests(unittest.TestCase):
             "files": [
                 {
                     "path": "/repo/apps/backend/internal/mail/decision.go",
-                    "package": "iosmail/backend/internal/mail",
-                    "testTarget": "",
+                    "testScope": "",
                     "metadata": {"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
                     "imports": [],
                     "identifiers": ["DecideSync"],
@@ -1353,8 +1348,7 @@ def valid_fact_document():
         "files": [
             {
                 "path": "/repo/Core.swift",
-                "package": "MailApp",
-                "testTarget": "",
+                "testScope": "",
                 "metadata": {
                     "moduleType": "core",
                     "domain": "mail.sync",
@@ -1380,10 +1374,9 @@ def valid_fact_document():
 def empty_interface_logic_evidence():
     return {
         "functionBodies": [],
-        "initializerBodies": [],
-        "computedProperties": [],
+        "constructorBodies": [],
+        "derivedValueBodies": [],
         "controlFlow": [],
-        "classDeclarations": [],
         "imperativeDeclarations": [],
     }
 

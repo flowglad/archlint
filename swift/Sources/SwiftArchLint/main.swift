@@ -34,7 +34,7 @@ struct SwiftFileInfo {
 struct SwiftTarget {
   let name: String
   let sourceRoots: [URL]
-  let isTestTarget: Bool
+  let isTestScope: Bool
 }
 
 struct XcodeGenProject: Decodable {
@@ -109,8 +109,7 @@ struct ArchitectureFacts: Encodable {
 
 struct SourceFact: Encodable {
   let path: String
-  let package: String
-  let testTarget: String
+  let testScope: String
   let metadata: MetadataFact
   let imports: [String]
   let identifiers: [String]
@@ -144,10 +143,9 @@ struct MetadataFact: Encodable {
 
 struct InterfaceLogicEvidence: Encodable {
   var functionBodies: [String] = []
-  var initializerBodies: [String] = []
-  var computedProperties: [String] = []
+  var constructorBodies: [String] = []
+  var derivedValueBodies: [String] = []
   var controlFlow: [String] = []
-  var classDeclarations: [String] = []
   var imperativeDeclarations: [String] = []
 
   mutating func recordFunctionBody(_ reference: String) {
@@ -155,19 +153,15 @@ struct InterfaceLogicEvidence: Encodable {
   }
 
   mutating func recordInitializerBody(_ reference: String) {
-    appendUnique(reference, to: &initializerBodies)
+    appendUnique(reference, to: &constructorBodies)
   }
 
   mutating func recordComputedProperty(_ reference: String) {
-    appendUnique(reference, to: &computedProperties)
+    appendUnique(reference, to: &derivedValueBodies)
   }
 
   mutating func recordControlFlow(_ reference: String) {
     appendUnique(reference, to: &controlFlow)
-  }
-
-  mutating func recordClassDeclaration(_ reference: String) {
-    appendUnique(reference, to: &classDeclarations)
   }
 
   private func appendUnique(_ reference: String, to references: inout [String]) {
@@ -224,7 +218,7 @@ enum SwiftArchLint {
     let files: [SourceFact] = try targets.flatMap { target in
       try target.sourceRoots.flatMap { root in
         try swiftFileInfos(root: root).map {
-          sourceFact($0, package: target.name, testTarget: target.isTestTarget ? target.name : "")
+          sourceFact($0, testScope: target.isTestScope ? target.name : "")
         }
       }
     }
@@ -245,12 +239,12 @@ enum SwiftArchLint {
       return SwiftTarget(
         name: targetName,
         sourceRoots: sourceRoots,
-        isTestTarget: isTestTarget(target)
+        isTestScope: isTestScope(target)
       )
     }
   }
 
-  private static func isTestTarget(_ target: XcodeGenTarget) -> Bool {
+  private static func isTestScope(_ target: XcodeGenTarget) -> Bool {
     if target.type.lowercased().contains("test") {
       return true
     }
@@ -365,13 +359,12 @@ enum SwiftArchLint {
     return ModuleMetadata(moduleType: moduleType, domain: domain, exemptReason: exemptReason)
   }
 
-  private static func sourceFact(_ fileInfo: SwiftFileInfo, package: String, testTarget: String)
+  private static func sourceFact(_ fileInfo: SwiftFileInfo, testScope: String)
     -> SourceFact
   {
     return SourceFact(
       path: fileInfo.url.path,
-      package: package,
-      testTarget: testTarget,
+      testScope: testScope,
       metadata: MetadataFact(
         moduleType: fileInfo.metadata.moduleType,
         domain: fileInfo.metadata.domain,
@@ -526,7 +519,6 @@ final class ArchitectureVisitor: SyntaxVisitor {
 
   override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
     recordTypeName(node.name.text)
-    interfaceLogicEvidence.recordClassDeclaration(node.name.text)
     return .visitChildren
   }
 

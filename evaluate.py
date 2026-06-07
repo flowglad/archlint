@@ -53,16 +53,14 @@ class Metadata:
 @dataclass(frozen=True)
 class InterfaceLogicEvidence:
     function_bodies: set[str]
-    initializer_bodies: set[str]
-    computed_properties: set[str]
+    constructor_bodies: set[str]
+    derived_value_bodies: set[str]
     control_flow: set[str]
-    class_declarations: set[str]
     imperative_declarations: set[str]
     has_function_bodies: bool
-    has_initializer_bodies: bool
-    has_computed_properties: bool
+    has_constructor_bodies: bool
+    has_derived_value_bodies: bool
     has_control_flow: bool
-    has_class_declarations: bool
     has_imperative_declarations: bool
 
 
@@ -81,8 +79,7 @@ class SharedStateEvidence:
 @dataclass(frozen=True)
 class SourceFile:
     path: str
-    package: str
-    test_target: str
+    test_scope: str
     metadata: Metadata
     imports: set[str]
     identifiers: set[str]
@@ -267,8 +264,7 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
     )
     return SourceFile(
         path=item["path"],
-        package=item["package"],
-        test_target=item["testTarget"],
+        test_scope=item["testScope"],
         metadata=Metadata(
             module_type=metadata["moduleType"],
             domain=metadata["domain"],
@@ -294,16 +290,14 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         property_interleaving_references=property_interleaving_references,
         interface_logic_evidence=InterfaceLogicEvidence(
             function_bodies=set(interface_logic_evidence["functionBodies"]),
-            initializer_bodies=set(interface_logic_evidence["initializerBodies"]),
-            computed_properties=set(interface_logic_evidence["computedProperties"]),
+            constructor_bodies=set(interface_logic_evidence["constructorBodies"]),
+            derived_value_bodies=set(interface_logic_evidence["derivedValueBodies"]),
             control_flow=set(interface_logic_evidence["controlFlow"]),
-            class_declarations=set(interface_logic_evidence["classDeclarations"]),
             imperative_declarations=set(interface_logic_evidence["imperativeDeclarations"]),
             has_function_bodies=bool(interface_logic_evidence["functionBodies"]),
-            has_initializer_bodies=bool(interface_logic_evidence["initializerBodies"]),
-            has_computed_properties=bool(interface_logic_evidence["computedProperties"]),
+            has_constructor_bodies=bool(interface_logic_evidence["constructorBodies"]),
+            has_derived_value_bodies=bool(interface_logic_evidence["derivedValueBodies"]),
             has_control_flow=bool(interface_logic_evidence["controlFlow"]),
-            has_class_declarations=bool(interface_logic_evidence["classDeclarations"]),
             has_imperative_declarations=bool(interface_logic_evidence["imperativeDeclarations"]),
         ),
     )
@@ -402,9 +396,8 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
         evidence = source_file.interface_logic_evidence
         for field_name, references in [
             ("function body evidence", evidence.function_bodies),
-            ("initializer body evidence", evidence.initializer_bodies),
-            ("computed property evidence", evidence.computed_properties),
-            ("class declaration evidence", evidence.class_declarations),
+            ("constructor body evidence", evidence.constructor_bodies),
+            ("derived value body evidence", evidence.derived_value_bodies),
         ]:
             references_outside_identifiers = sorted(references - source_file.identifiers)
             if references_outside_identifiers:
@@ -435,10 +428,10 @@ def evaluate_file_metadata(files: list[SourceFile]) -> list[Violation]:
             violations.append(Violation(source_file.path, "exempt module must declare @archlint.exempt-reason"))
         if metadata.module_type != "exempt" and metadata.exempt_reason:
             violations.append(Violation(source_file.path, "@archlint.exempt-reason is only valid on exempt modules"))
-        if metadata.module_type in {"test", "stateTest"} and not source_file.test_target:
-            violations.append(Violation(source_file.path, "test module must be declared in a test target"))
-        if metadata.module_type in {"core", "interface", "value", "shell", "state"} and source_file.test_target:
-            violations.append(Violation(source_file.path, "production module must not be declared in a test target"))
+        if metadata.module_type in {"test", "stateTest"} and not source_file.test_scope:
+            violations.append(Violation(source_file.path, "test module must be declared in a test scope"))
+        if metadata.module_type in {"core", "interface", "value", "shell", "state"} and source_file.test_scope:
+            violations.append(Violation(source_file.path, "production module must not be declared in a test scope"))
     return violations
 
 
@@ -474,32 +467,31 @@ def evaluate_exemption_admissibility(files: list[SourceFile]) -> list[Violation]
         evidence = source_file.interface_logic_evidence
         has_effects = source_file.has_effectful_imports or source_file.has_effectful_identifiers
 
-        if reason == "app-entry":
-            if evidence.has_function_bodies or evidence.has_initializer_bodies or evidence.has_class_declarations:
-                violations.append(Violation(source_file.path, "app-entry exemption must not contain service logic"))
+        if reason == "entrypoint":
+            if evidence.has_function_bodies or evidence.has_constructor_bodies or evidence.has_control_flow:
+                violations.append(Violation(source_file.path, "entrypoint exemption must not contain decision logic"))
 
-        if reason == "view-adapter":
-            if evidence.has_class_declarations:
-                violations.append(Violation(source_file.path, "view-adapter exemption must not declare classes"))
-
-        if reason == "framework-boundary" and not has_effects:
-            violations.append(Violation(source_file.path, "framework-boundary exemption must touch effectful APIs"))
+        if reason == "effect-boundary" and not has_effects:
+            violations.append(Violation(source_file.path, "effect-boundary exemption must touch effectful APIs"))
 
         if reason == "effect-facade":
             if has_effects:
                 violations.append(Violation(source_file.path, "effect-facade exemption must not touch effectful APIs directly"))
-            if evidence.has_class_declarations:
-                violations.append(Violation(source_file.path, "effect-facade exemption must not declare classes"))
 
-        if reason == "principal-context":
+        if reason == "pure-glue":
             if has_effects:
-                violations.append(Violation(source_file.path, "principal-context exemption must not touch effectful APIs"))
+                violations.append(Violation(source_file.path, "pure-glue exemption must not touch effectful APIs"))
+            if evidence.has_control_flow:
+                violations.append(Violation(source_file.path, "pure-glue exemption must not contain decision control flow"))
 
-        if reason in {"prototype-data", "test-fixture"}:
+        if reason == "static-data":
             if has_effects:
-                violations.append(Violation(source_file.path, f"{reason} exemption must not touch effectful APIs"))
-            if evidence.has_class_declarations:
-                violations.append(Violation(source_file.path, f"{reason} exemption must not declare classes"))
+                violations.append(Violation(source_file.path, "static-data exemption must not touch effectful APIs"))
+            if evidence.has_function_bodies or evidence.has_constructor_bodies or evidence.has_control_flow:
+                violations.append(Violation(source_file.path, "static-data exemption must not contain behavior"))
+
+        if reason == "test-support" and has_effects:
+            violations.append(Violation(source_file.path, "test-support exemption must not touch effectful APIs"))
 
     return violations
 
@@ -509,7 +501,7 @@ def evaluate_effect_boundaries(files: list[SourceFile]) -> list[Violation]:
     for source_file in files:
         module_type = source_file.metadata.module_type
         if module_type == "core" and source_file.has_effectful_imports:
-            violations.append(Violation(source_file.path, "core module must not import effectful packages"))
+            violations.append(Violation(source_file.path, "core module must not import effectful dependencies"))
         if module_type == "shell" and not (
             source_file.has_effectful_imports or source_file.has_effectful_identifiers
         ):
@@ -539,10 +531,10 @@ def evaluate_effect_boundaries(files: list[SourceFile]) -> list[Violation]:
 
 
 def evaluate_dependency_direction(files: list[SourceFile]) -> list[Violation]:
-    implementation_references_by_package: dict[str, set[str]] = {}
+    implementation_references_by_domain: dict[str, set[str]] = {}
     for source_file in files:
         if source_file.metadata.module_type in {"shell", "state", "exempt"}:
-            implementation_references_by_package.setdefault(source_file.package, set()).update(
+            implementation_references_by_domain.setdefault(source_file.metadata.domain, set()).update(
                 source_file.decision_references
             )
 
@@ -550,7 +542,7 @@ def evaluate_dependency_direction(files: list[SourceFile]) -> list[Violation]:
     for source_file in files:
         if source_file.metadata.module_type not in {"core", "value"}:
             continue
-        forbidden_references = implementation_references_by_package.get(source_file.package, set())
+        forbidden_references = implementation_references_by_domain.get(source_file.metadata.domain, set())
         referenced_implementation = sorted(source_file.api_references.intersection(forbidden_references))
         if referenced_implementation:
             violations.append(
@@ -570,10 +562,8 @@ def evaluate_value_modules(files: list[SourceFile]) -> list[Violation]:
         evidence = source_file.interface_logic_evidence
         if evidence.has_function_bodies:
             violations.append(Violation(source_file.path, "value module must not contain function bodies"))
-        if evidence.has_initializer_bodies:
-            violations.append(Violation(source_file.path, "value module must not contain initializer bodies"))
-        if evidence.has_class_declarations:
-            violations.append(Violation(source_file.path, "value module must not declare classes"))
+        if evidence.has_constructor_bodies:
+            violations.append(Violation(source_file.path, "value module must not contain constructor bodies"))
         if evidence.has_control_flow:
             violations.append(Violation(source_file.path, "value module must not contain control flow"))
         if evidence.has_imperative_declarations:
@@ -591,14 +581,12 @@ def evaluate_interface_modules(files: list[SourceFile]) -> list[Violation]:
         evidence = source_file.interface_logic_evidence
         if evidence.has_function_bodies:
             violations.append(Violation(source_file.path, "interface module must not contain function bodies"))
-        if evidence.has_initializer_bodies:
-            violations.append(Violation(source_file.path, "interface module must not contain initializer bodies"))
-        if evidence.has_computed_properties:
-            violations.append(Violation(source_file.path, "interface module must not contain computed properties"))
+        if evidence.has_constructor_bodies:
+            violations.append(Violation(source_file.path, "interface module must not contain constructor bodies"))
+        if evidence.has_derived_value_bodies:
+            violations.append(Violation(source_file.path, "interface module must not contain derived value bodies"))
         if evidence.has_control_flow:
             violations.append(Violation(source_file.path, "interface module must not contain control flow"))
-        if evidence.has_class_declarations:
-            violations.append(Violation(source_file.path, "interface module must not declare classes"))
         if evidence.has_imperative_declarations:
             violations.append(
                 Violation(source_file.path, "interface module may only declare imports, types, and constants")

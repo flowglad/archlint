@@ -22,13 +22,12 @@
         "exemptReason": {
           "enum": [
             "",
-            "app-entry",
+            "effect-boundary",
             "effect-facade",
-            "framework-boundary",
-            "principal-context",
-            "prototype-data",
-            "test-fixture",
-            "view-adapter"
+            "entrypoint",
+            "pure-glue",
+            "static-data",
+            "test-support"
           ]
         }
       }
@@ -65,18 +64,16 @@
       "additionalProperties": false,
       "required": [
         "functionBodies",
-        "initializerBodies",
-        "computedProperties",
+        "constructorBodies",
+        "derivedValueBodies",
         "controlFlow",
-        "classDeclarations",
         "imperativeDeclarations"
       ],
       "properties": {
         "functionBodies": { "$ref": "#/$defs/stringList" },
-        "initializerBodies": { "$ref": "#/$defs/stringList" },
-        "computedProperties": { "$ref": "#/$defs/stringList" },
+        "constructorBodies": { "$ref": "#/$defs/stringList" },
+        "derivedValueBodies": { "$ref": "#/$defs/stringList" },
         "controlFlow": { "$ref": "#/$defs/stringList" },
-        "classDeclarations": { "$ref": "#/$defs/stringList" },
         "imperativeDeclarations": { "$ref": "#/$defs/stringList" }
       }
     },
@@ -85,8 +82,7 @@
       "additionalProperties": false,
       "required": [
         "path",
-        "package",
-        "testTarget",
+        "testScope",
         "metadata",
         "imports",
         "identifiers",
@@ -103,8 +99,7 @@
       ],
       "properties": {
         "path": { "$ref": "#/$defs/nonEmptyString" },
-        "package": { "$ref": "#/$defs/nonEmptyString" },
-        "testTarget": { "type": "string" },
+        "testScope": { "type": "string" },
         "metadata": { "$ref": "#/$defs/metadata" },
         "imports": { "$ref": "#/$defs/stringList" },
         "identifiers": { "$ref": "#/$defs/stringList" },
