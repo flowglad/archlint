@@ -5,7 +5,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 TMPDIR="${TMPDIR:-/tmp}/archlint-ocaml-fixture-$$"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-mkdir -p "$TMPDIR/lib" "$TMPDIR/test"
+mkdir -p "$TMPDIR/lib" "$TMPDIR/test" "$TMPDIR/fuzz" "$TMPDIR/wasm"
 
 cat > "$TMPDIR/lib/decision.ml" <<'ML'
 (* @archlint.module core
@@ -34,6 +34,31 @@ let suite =
       QCheck2.Gen.(list small_int)
       (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
   ]
+ML
+
+cat > "$TMPDIR/fuzz/fuzz_decision.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.decision *)
+
+let suite =
+  [
+    QCheck2.Test.make ~name:"fuzz-like test scope"
+      QCheck2.Gen.(list small_int)
+      (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
+  ]
+ML
+
+cat > "$TMPDIR/wasm/export.ml" <<'ML'
+(* @archlint.module shell
+   @archlint.domain demo.decision *)
+
+open Js_of_ocaml
+
+let () =
+  Js.export "demo"
+    (object%js
+       method decide x = Decision.decide x
+    end)
 ML
 
 eval "$(opam env --switch "$ROOT/../onton" --set-switch --shell=sh)"
@@ -79,6 +104,11 @@ assert state and state[0]["interleaving"] is True, state
 assert "decide" in state[0]["references"], state
 handler = [item for item in document["files"] if item["path"].endswith("handler.ml")][0]
 assert "Unix" in handler["effectfulIdentifiers"], handler
+fuzz = [item for item in document["files"] if item["path"].endswith("fuzz_decision.ml")][0]
+assert fuzz["testScope"] == "fuzz_decision", fuzz
+export = [item for item in document["files"] if item["path"].endswith("export.ml")][0]
+assert "Js_of_ocaml" in export["effectfulImports"], export
+assert "Js" in export["effectfulIdentifiers"], export
 counter = [item for item in document["files"] if item["path"].endswith("counter.ml")][0]
 assert counter["sharedState"], counter
 PY

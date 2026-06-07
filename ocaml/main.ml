@@ -217,6 +217,7 @@ let effectful_imports =
       "Eio";
       "Eio_main";
       "Eio_unix";
+      "Js_of_ocaml";
       "Mirage_crypto_rng_unix";
       "Sys";
       "Unix";
@@ -230,6 +231,8 @@ let effectful_identifiers =
       "Eio_main";
       "Eio_unix";
       "In_channel";
+      "Js";
+      "Js_of_ocaml";
       "Out_channel";
       "Sys";
       "Unix";
@@ -619,7 +622,9 @@ let infer_test_scope root path =
       String.sub path (String.length root) (String.length path - String.length root)
     else path
   in
-  if path_has_segment relative "test" || path_has_segment relative "lib_test" then
+  if path_has_segment relative "test" || path_has_segment relative "lib_test"
+     || path_has_segment relative "fuzz"
+  then
     basename_without_extension path
   else ""
 
