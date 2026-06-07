@@ -438,7 +438,7 @@ def evaluate_file_metadata(files: list[SourceFile]) -> list[Violation]:
 def evaluate_domain_breadth(files: list[SourceFile]) -> list[Violation]:
     files_by_domain: dict[str, list[SourceFile]] = {}
     for source_file in files:
-        if source_file.metadata.module_type in {"value", "test", "stateTest", "exempt"}:
+        if source_file.metadata.module_type in {"interface", "value", "test", "stateTest", "exempt"}:
             continue
         if not source_file.metadata.domain:
             continue

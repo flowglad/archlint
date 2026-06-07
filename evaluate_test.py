@@ -962,12 +962,7 @@ class EvaluateTests(unittest.TestCase):
         files = [
             source_file(
                 path=f"/repo/Domain/File{index}.swift",
-                metadata={"moduleType": "interface", "domain": "any.overbroad.domain", "exemptReason": ""},
-                decisionSurface=[],
-                propertyTestSurface=[],
-                decisionProducts=[],
-                decisionReferences=[],
-                apiReferences=[],
+                metadata={"moduleType": "core", "domain": "any.overbroad.domain", "exemptReason": ""},
             )
             for index in range(evaluate.DOMAIN_PRODUCTION_MODULE_LIMIT + 1)
         ]
@@ -979,8 +974,15 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_domain_breadth_ignores_tests_and_exempt_modules(self):
+    def test_domain_breadth_ignores_interfaces_tests_and_exempt_modules(self):
         files = [
+            source_file(
+                path=f"/repo/Domain/File{index}.swift",
+                metadata={"moduleType": "core", "domain": "bounded.domain", "exemptReason": ""},
+            )
+            for index in range(evaluate.DOMAIN_PRODUCTION_MODULE_LIMIT)
+        ]
+        files.extend(
             source_file(
                 path=f"/repo/Domain/File{index}.swift",
                 metadata={"moduleType": "interface", "domain": "bounded.domain", "exemptReason": ""},
@@ -991,7 +993,7 @@ class EvaluateTests(unittest.TestCase):
                 apiReferences=[],
             )
             for index in range(evaluate.DOMAIN_PRODUCTION_MODULE_LIMIT)
-        ]
+        )
         files.extend(
             source_file(
                 path=f"/repo/Domain/File{index}Tests.swift",
@@ -1017,12 +1019,7 @@ class EvaluateTests(unittest.TestCase):
         files = [
             source_file(
                 path=f"/repo/Domain/File{index}.swift",
-                metadata={"moduleType": "interface", "domain": "bounded.domain", "exemptReason": ""},
-                decisionSurface=[],
-                propertyTestSurface=[],
-                decisionProducts=[],
-                decisionReferences=[],
-                apiReferences=[],
+                metadata={"moduleType": "core", "domain": "bounded.domain", "exemptReason": ""},
             )
             for index in range(evaluate.DOMAIN_PRODUCTION_MODULE_LIMIT)
         ]
