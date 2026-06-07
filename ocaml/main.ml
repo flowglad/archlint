@@ -238,6 +238,18 @@ let effectful_identifiers =
       "Unix";
     ]
 
+let test_library_identifiers =
+  StringSet.of_list
+    [
+      "Alcotest";
+      "Crowbar";
+      "Expect_test";
+      "Ppx_inline_test";
+      "QCheck";
+      "QCheck2";
+      "QCheck_alcotest";
+    ]
+
 let state_type_identifiers =
   StringSet.of_list [ "Atomic"; "Condition"; "Hashtbl"; "Mutex"; "Queue"; "Semaphore"; "Stack" ]
 
@@ -247,6 +259,7 @@ let record_longident facts lid =
   add_api_reference facts (lid_last lid);
   List.iter
     (fun part ->
+      if StringSet.mem part test_library_identifiers then facts.api_references <- add facts.api_references part;
       if StringSet.mem part effectful_identifiers then
         facts.effectful_identifiers <- add facts.effectful_identifiers part)
     parts
@@ -340,7 +353,13 @@ let rec expression_contains_interleaving_generator expression =
 
 let api_references_in_expression expression =
   let references = ref StringSet.empty in
-  let record lid = references := add !references (lid_last lid) in
+  let record lid =
+    references := add !references (lid_last lid);
+    List.iter
+      (fun part ->
+        if StringSet.mem part test_library_identifiers then references := add !references part)
+      (lid_parts lid)
+  in
   let iterator =
     {
       Ast_iterator.default_iterator with
@@ -613,23 +632,13 @@ let interface_exports_for_file path =
   in
   { exported_values = facts.decision_surface; exported_references = facts.decision_references }
 
-let test_library_identifiers =
-  StringSet.of_list
-    [
-      "Alcotest";
-      "Crowbar";
-      "Expect_test";
-      "Ppx_inline_test";
-      "QCheck";
-      "QCheck2";
-      "QCheck_alcotest";
-    ]
-
 let references_test_library facts =
+  let expanded_references =
+    expanded_api_references facts facts.api_references StringSet.empty
+  in
   StringSet.exists
     (fun name ->
-      StringSet.mem name facts.imports || StringSet.mem name facts.identifiers
-      || StringSet.mem name facts.api_references)
+      StringSet.mem name facts.imports || StringSet.mem name expanded_references)
     test_library_identifiers
 
 let infer_test_scope path facts =
