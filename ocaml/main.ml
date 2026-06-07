@@ -26,7 +26,6 @@ type interface_logic_evidence = {
 
 type file_fact = {
   path : string;
-  language : string;
   package : string;
   test_target : string;
   metadata : metadata;
@@ -671,7 +670,6 @@ let file_fact_to_json fact =
   `Assoc
     [
       ("path", `String fact.path);
-      ("language", `String fact.language);
       ("package", `String fact.package);
       ("testTarget", `String fact.test_target);
       ("metadata", metadata_to_json fact.metadata);
@@ -716,7 +714,6 @@ let source_fact ~root ~interfaces path =
   in
   {
     path;
-    language = "ocaml";
     package = infer_package path;
     test_target = infer_test_target root path;
     metadata;

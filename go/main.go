@@ -33,7 +33,6 @@ type architectureFactDocument struct {
 
 type architectureFileFact struct {
 	Path                   string                        `json:"path"`
-	Language               string                        `json:"language"`
 	Package                string                        `json:"package"`
 	TestTarget             string                        `json:"testTarget"`
 	Metadata               architectureMetadataFact      `json:"metadata"`
@@ -234,7 +233,6 @@ func goArchitectureFileFact(path string) (architectureFileFact, []violation) {
 
 	return architectureFileFact{
 		Path:                   path,
-		Language:               "go",
 		Package:                packagePath,
 		TestTarget:             goTestTarget(path),
 		Metadata:               architectureMetadataForGo(metadata),

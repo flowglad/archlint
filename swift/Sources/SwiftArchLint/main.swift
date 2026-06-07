@@ -109,7 +109,6 @@ struct ArchitectureFacts: Encodable {
 
 struct SourceFact: Encodable {
   let path: String
-  let language: String
   let package: String
   let testTarget: String
   let metadata: MetadataFact
@@ -371,7 +370,6 @@ enum SwiftArchLint {
   {
     return SourceFact(
       path: fileInfo.url.path,
-      language: "swift",
       package: package,
       testTarget: testTarget,
       metadata: MetadataFact(

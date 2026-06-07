@@ -15,7 +15,6 @@ def source_file(**overrides):
     overridden_keys = set(overrides)
     data = {
         "path": "/repo/Core.swift",
-        "language": "swift",
         "package": "MailApp",
         "testTarget": "",
         "metadata": {
@@ -196,10 +195,9 @@ class EvaluateTests(unittest.TestCase):
 
         self.assertEqual([], violations)
 
-    def test_core_module_exhaustive_property_surface_is_language_neutral(self):
+    def test_core_module_exhaustive_property_surface_is_structural(self):
         core = source_file(
             path="/repo/Core.ml",
-            language="ocaml",
             package="Core",
             identifiers=["decideSync", "helper"],
             apiReferences=["decideSync", "helper"],
@@ -209,7 +207,6 @@ class EvaluateTests(unittest.TestCase):
         )
         linked_test = source_file(
             path="/repo/Core_test.ml",
-            language="ocaml",
             package="CoreTest",
             testTarget="CoreTest",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
@@ -447,17 +444,14 @@ class EvaluateTests(unittest.TestCase):
     def test_dependency_direction_is_package_scoped(self):
         core = source_file(
             path="/repo/auth/Core.go",
-            language="go",
             package="repo/auth",
             metadata={"moduleType": "core", "domain": "auth.installation", "exemptReason": ""},
             apiReferences=["Principal"],
         )
         exempt = source_file(
             path="/repo/principal/Context.go",
-            language="go",
             package="repo/principal",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
-            imports=["context"],
             decisionReferences=["Principal"],
         )
 
@@ -759,17 +753,21 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_view_adapter_exemption_must_be_swiftui_shape(self):
+    def test_view_adapter_exemption_must_not_declare_classes(self):
         view_adapter = source_file(
             path="/repo/View.swift",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
-            imports=["Foundation"],
+            identifiers=["ViewController"],
+            interfaceLogicEvidence={
+                **empty_interface_logic_evidence(),
+                "classDeclarations": ["ViewController"],
+            },
         )
 
         violations = evaluate.evaluate([view_adapter])
 
         self.assertIn(
-            "view-adapter exemption must import SwiftUI",
+            "view-adapter exemption must not declare classes",
             [violation.message for violation in violations],
         )
 
@@ -790,7 +788,6 @@ class EvaluateTests(unittest.TestCase):
     def test_framework_boundary_exemption_may_own_runtime_shared_state(self):
         boundary = source_file(
             path="/repo/Boundary.ml",
-            language="ocaml",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "framework-boundary"},
             identifiers=["EffectType", "cache"],
             effectfulIdentifiers=["EffectType"],
@@ -816,24 +813,24 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_principal_context_exemption_must_be_go_context_glue(self):
+    def test_principal_context_exemption_must_not_touch_effectful_api(self):
         principal_context = source_file(
             path="/repo/Context.swift",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
-            imports=["Foundation"],
+            imports=["EffectFramework"],
+            effectfulImports=["EffectFramework"],
         )
 
         violations = evaluate.evaluate([principal_context])
 
         self.assertIn(
-            "principal-context exemption must be Go context glue",
+            "principal-context exemption must not touch effectful APIs",
             [violation.message for violation in violations],
         )
 
     def test_prototype_data_exemption_must_not_touch_effectful_api(self):
         prototype = source_file(
             path="/repo/Prototype.go",
-            language="go",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "prototype-data"},
             imports=["effect.boundary"],
             effectfulImports=["effect.boundary"],
@@ -851,14 +848,10 @@ class EvaluateTests(unittest.TestCase):
             source_file(
                 path="/repo/MailApp.swift",
                 metadata={"moduleType": "exempt", "domain": "", "exemptReason": "app-entry"},
-                imports=["SwiftUI"],
-                effectfulImports=["SwiftUI"],
             ),
             source_file(
                 path="/repo/View.swift",
                 metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
-                imports=["SwiftUI"],
-                effectfulImports=["SwiftUI"],
             ),
             source_file(
                 path="/repo/Boundary.swift",
@@ -872,9 +865,7 @@ class EvaluateTests(unittest.TestCase):
             ),
             source_file(
                 path="/repo/Context.go",
-                language="go",
                 metadata={"moduleType": "exempt", "domain": "", "exemptReason": "principal-context"},
-                imports=["context"],
             ),
             source_file(
                 path="/repo/Prototype.swift",
@@ -894,8 +885,6 @@ class EvaluateTests(unittest.TestCase):
         view_adapter = source_file(
             path="/repo/View.swift",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "view-adapter"},
-            imports=["SwiftUI"],
-            effectfulImports=["SwiftUI"],
             apiReferences=[],
         )
 
@@ -907,7 +896,6 @@ class EvaluateTests(unittest.TestCase):
         exempt = source_file(
             path="/repo/View.swift",
             metadata={"moduleType": "exempt", "domain": "mail.sync", "exemptReason": "view-adapter"},
-            imports=["SwiftUI"],
         )
 
         violations = evaluate.evaluate([exempt])
@@ -1056,7 +1044,6 @@ class EvaluateTests(unittest.TestCase):
 
     def test_evaluator_loads_fact_schema_from_schema_artifact(self):
         self.assertEqual(evaluate.load_fact_schema(), evaluate.FACT_SCHEMA)
-        self.assertEqual("go", evaluate.FACT_SCHEMA["$defs"]["sourceFile"]["properties"]["language"]["enum"][0])
         self.assertEqual(
             {"core", "interface", "value", "shell", "state", "test", "stateTest", "exempt"},
             evaluate.VALID_MODULE_TYPES,
@@ -1090,7 +1077,6 @@ class EvaluateTests(unittest.TestCase):
     def test_value_module_rejects_imperative_declarations(self):
         value = source_file(
             path="/repo/Value.go",
-            language="go",
             metadata={"moduleType": "value", "domain": "mail.sync", "exemptReason": ""},
             interfaceLogicEvidence={
                 **empty_interface_logic_evidence(),
@@ -1152,13 +1138,6 @@ class EvaluateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"\$\.files\[0\]\.sharedState\[0\]"):
             evaluate.parse_fact_document(document)
 
-    def test_parse_fact_document_rejects_unknown_languages(self):
-        document = valid_fact_document()
-        document["files"][0]["language"] = "typescript"
-
-        with self.assertRaisesRegex(ValueError, r"\$\.files\[0\]\.language"):
-            evaluate.parse_fact_document(document)
-
     def test_parse_fact_document_rejects_unknown_module_types(self):
         document = valid_fact_document()
         document["files"][0]["metadata"]["moduleType"] = "handler"
@@ -1211,7 +1190,6 @@ class EvaluateTests(unittest.TestCase):
     def test_evaluate_adapters_evaluates_each_adapter_document_independently(self):
         go_core = source_file(
             path="/repo/apps/backend/internal/mail/decision.go",
-            language="go",
             package="iosmail/backend/internal/mail",
             metadata={"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
             identifiers=["DecideSync"],
@@ -1222,7 +1200,6 @@ class EvaluateTests(unittest.TestCase):
         )
         swift_test = source_file(
             path="/repo/apps/ios/MailAppTests/MailDeciderTests.swift",
-            language="swift",
             package="MailAppTests",
             testTarget="MailDeciderTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
@@ -1262,7 +1239,6 @@ class EvaluateTests(unittest.TestCase):
             "files": [
                 {
                     "path": "/repo/apps/backend/internal/mail/decision.go",
-                    "language": "go",
                     "package": "iosmail/backend/internal/mail",
                     "testTarget": "",
                     "metadata": {"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
@@ -1295,7 +1271,6 @@ class EvaluateTests(unittest.TestCase):
 
         self.assertEqual(1, len(files))
         self.assertEqual("/repo/apps/backend/internal/mail/decision.go", files[0].path)
-        self.assertEqual("go", files[0].language)
         self.assertEqual({"DecideSync"}, files[0].decision_surface)
         self.assertIn("--repo-root", run.call_args.args[0])
         self.assertIn("--go-module", run.call_args.args[0])
@@ -1306,7 +1281,6 @@ class EvaluateTests(unittest.TestCase):
     def test_run_ocaml_adapter_constructs_dune_command(self):
         payload = valid_fact_document()
         payload["files"][0]["path"] = "/repo/lib/decision.ml"
-        payload["files"][0]["language"] = "ocaml"
         completed = subprocess_result(stdout=evaluate.json.dumps(payload), returncode=0)
 
         with mock.patch.object(evaluate.subprocess, "run", return_value=completed) as run:
@@ -1319,49 +1293,12 @@ class EvaluateTests(unittest.TestCase):
                 ocaml_root="lib",
             )
 
-        self.assertEqual("ocaml", files[0].language)
+        self.assertEqual("/repo/lib/decision.ml", files[0].path)
         command = run.call_args.args[0]
         self.assertEqual("dune", command[0])
         self.assertIn("--root", command)
         self.assertIn("./main.exe", command)
         self.assertEqual("lib", command[command.index("--ocaml-root") + 1])
-
-    def test_run_adapter_rejects_facts_for_another_language(self):
-        payload = {
-            "files": [
-                {
-                    "path": "/repo/apps/ios/MailApp/Domain/MailDecider.swift",
-                    "language": "swift",
-                    "package": "MailApp",
-                    "testTarget": "",
-                    "metadata": {"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
-                    "imports": [],
-                    "identifiers": ["decideSync"],
-                    "apiReferences": ["decideSync"],
-                    "decisionSurface": ["decideSync"],
-                    "propertyTestSurface": ["decideSync"],
-                    "decisionProducts": [],
-                    "decisionReferences": ["decideSync"],
-                    "effectfulImports": [],
-                    "effectfulIdentifiers": [],
-                    "sharedState": [],
-                    "propertyChecks": [],
-                    "interfaceLogicEvidence": empty_interface_logic_evidence(),
-                }
-            ]
-        }
-        completed = subprocess_result(stdout=evaluate.json.dumps(payload), returncode=0)
-
-        with mock.patch.object(evaluate.subprocess, "run", return_value=completed):
-            with self.assertRaisesRegex(ValueError, "go adapter emitted facts for another language"):
-                evaluate.run_adapter(
-                    Path("/repo"),
-                    "go",
-                    go_module="backend-module",
-                    go_packages="./domain/...",
-                    swift_xcodegen=None,
-                    ocaml_root=None,
-                )
 
     def test_run_adapter_reports_adapter_failure_output(self):
         completed = subprocess_result(stdout="partial output\n", stderr="adapter error\n", returncode=2)
@@ -1416,7 +1353,6 @@ def valid_fact_document():
         "files": [
             {
                 "path": "/repo/Core.swift",
-                "language": "swift",
                 "package": "MailApp",
                 "testTarget": "",
                 "metadata": {

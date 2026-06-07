@@ -85,7 +85,6 @@
       "additionalProperties": false,
       "required": [
         "path",
-        "language",
         "package",
         "testTarget",
         "metadata",
@@ -104,7 +103,6 @@
       ],
       "properties": {
         "path": { "$ref": "#/$defs/nonEmptyString" },
-        "language": { "enum": ["go", "swift", "ocaml"] },
         "package": { "$ref": "#/$defs/nonEmptyString" },
         "testTarget": { "type": "string" },
         "metadata": { "$ref": "#/$defs/metadata" },

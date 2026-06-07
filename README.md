@@ -13,8 +13,6 @@ Adapters should not own policy or call the evaluator. Do not add new policy to `
 
 When multiple adapters are requested, their facts are not merged before policy evaluation. The Go, OCaml, and Swift adapters describe different language universes, so shell-to-core, core-to-test, and state-to-stateTest relationships are evaluated inside each adapter result. Cross-language architecture relationships should be represented through explicit interface modules or backend API contracts, not by sharing an `@archlint.domain` string.
 
-Each adapter document must be single-language: the Go adapter may only emit `language: "go"` facts, the OCaml adapter may only emit `language: "ocaml"` facts, and the Swift adapter may only emit `language: "swift"` facts. The `language` field exists to validate adapter boundaries and support file-local language-specific rules; it is not used to make cross-adapter relationship joins safe.
-
 ## Running
 
 Run evaluator tests from this repository:
@@ -99,7 +97,7 @@ Each metadata tag may appear at most once. Duplicating `@archlint.module`, `@arc
 
 `test` and `stateTest` modules must live in test targets. Production module types (`core`, `interface`, `value`, `shell`, and `state`) must not be declared in test targets. Use test modules for test helpers rather than moving production architecture surfaces into test files.
 
-Domains must be specific enough to make shell-to-core linkage meaningful. Archlint enforces this structurally by limiting how many non-value production modules can participate in one language/domain pair; if a domain grows past that bound, split it by responsibility.
+Domains must be specific enough to make shell-to-core linkage meaningful. Archlint enforces this structurally by limiting how many non-value production modules can participate in one domain within an adapter document; if a domain grows past that bound, split it by responsibility.
 
 Domain names must use lowercase alphanumeric segments separated by `.` or `-`, such as `mail.sync`, `backend.http`, or `http-api`. Uppercase letters, underscores, empty segments, and other punctuation are invalid.
 
@@ -159,17 +157,17 @@ State coverage is deliberately structural. A `stateTest` produces interleaving `
 
 Allowed exemption reasons are intentionally narrow:
 
-- `app-entry`: SwiftUI app launch glue; must not contain service logic
+- `app-entry`: app launch glue; must not contain service logic
 - `effect-facade`: thin service facade over effect boundaries; must not touch effectful APIs directly
 - `framework-boundary`: direct framework calls that cannot be represented as an inert interface; must actually touch effectful APIs
-- `principal-context`: Go `context` principal propagation glue; must not touch effectful APIs
+- `principal-context`: principal propagation glue; must not touch effectful APIs
 - `prototype-data`: static demo data; must not touch effectful APIs or declare classes
 - `test-fixture`: intentionally failing or fake support types; must not touch effectful APIs or declare classes
-- `view-adapter`: SwiftUI view composition and UI state glue; must import SwiftUI and must not declare classes
+- `view-adapter`: view composition and UI state glue; must not declare classes
 
 When a conformance test fails, prefer changing the application architecture over weakening the rule. Narrow exceptions are acceptable for view-adapter or framework boundary code that does not fit the current model, but they should be explicit in the checker and justified by file shape.
 
-Do not grow exemption reasons into hidden module types. A reason-specific rule may reject an implausible exemption shape, such as `view-adapter` without SwiftUI or `framework-boundary` without effectful APIs. It should not impose positive architectural relationships. That promotion threshold is exactly why inert behavioral values were moved from `exempt` into the `value` module type.
+Do not grow exemption reasons into hidden module types. A reason-specific rule may reject an implausible exemption shape, such as class declarations inside `view-adapter` or `framework-boundary` without effectful APIs. It should not impose positive architectural relationships. That promotion threshold is exactly why inert behavioral values were moved from `exempt` into the `value` module type.
 
 ## Fact Schema
 
@@ -188,7 +186,6 @@ Each file fact includes:
 ```json
 {
   "path": "/absolute/path/to/source",
-  "language": "go",
   "package": "package-or-target",
   "testTarget": "",
   "metadata": {
@@ -239,7 +236,6 @@ Property-test evidence is tied to known property-testing API calls, not to a tes
 
 The fact schema is intentionally strict:
 
-- `language` must be `go`, `ocaml`, or `swift`
 - `metadata.moduleType` and `metadata.exemptReason` must be known schema enum values, with `""` reserved for missing source tags
 - `path` and `package` must be non-empty strings
 - list fields must contain unique, non-empty strings

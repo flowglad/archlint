@@ -81,7 +81,6 @@ class SharedStateEvidence:
 @dataclass(frozen=True)
 class SourceFile:
     path: str
-    language: str
     package: str
     test_target: str
     metadata: Metadata
@@ -218,18 +217,7 @@ def run_adapter(
     if result.returncode != 0:
         output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
         raise RuntimeError(f"{adapter} adapter failed: {output}")
-    files = parse_fact_document(json.loads(result.stdout))
-    validate_adapter_language(adapter, files)
-    return files
-
-
-def validate_adapter_language(adapter: str, files: list[SourceFile]) -> None:
-    mismatched_files = sorted(source_file.path for source_file in files if source_file.language != adapter)
-    if mismatched_files:
-        raise ValueError(
-            f"{adapter} adapter emitted facts for another language: "
-            + ", ".join(mismatched_files)
-        )
+    return parse_fact_document(json.loads(result.stdout))
 
 
 def parse_fact_document(document: dict[str, Any]) -> list[SourceFile]:
@@ -256,7 +244,6 @@ def render_validation_error(error: ValidationError) -> str:
 def parse_source_file(item: dict[str, Any]) -> SourceFile:
     metadata = item["metadata"]
     interface_logic_evidence = item["interfaceLogicEvidence"]
-    language = item["language"]
     imports = set(item["imports"])
     identifiers = set(item["identifiers"])
     property_checks = tuple(
@@ -280,7 +267,6 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
     )
     return SourceFile(
         path=item["path"],
-        language=language,
         package=item["package"],
         test_target=item["testTarget"],
         metadata=Metadata(
@@ -457,17 +443,16 @@ def evaluate_file_metadata(files: list[SourceFile]) -> list[Violation]:
 
 
 def evaluate_domain_breadth(files: list[SourceFile]) -> list[Violation]:
-    files_by_language_domain: dict[tuple[str, str], list[SourceFile]] = {}
+    files_by_domain: dict[str, list[SourceFile]] = {}
     for source_file in files:
         if source_file.metadata.module_type in {"value", "test", "stateTest", "exempt"}:
             continue
         if not source_file.metadata.domain:
             continue
-        key = (source_file.language, source_file.metadata.domain)
-        files_by_language_domain.setdefault(key, []).append(source_file)
+        files_by_domain.setdefault(source_file.metadata.domain, []).append(source_file)
 
     violations: list[Violation] = []
-    for (_, domain), domain_files in files_by_language_domain.items():
+    for domain, domain_files in files_by_domain.items():
         if len(domain_files) <= DOMAIN_PRODUCTION_MODULE_LIMIT:
             continue
         violation_path = sorted(source_file.path for source_file in domain_files)[0]
@@ -490,14 +475,10 @@ def evaluate_exemption_admissibility(files: list[SourceFile]) -> list[Violation]
         has_effects = source_file.has_effectful_imports or source_file.has_effectful_identifiers
 
         if reason == "app-entry":
-            if source_file.language != "swift" or "SwiftUI" not in source_file.imports:
-                violations.append(Violation(source_file.path, "app-entry exemption must be SwiftUI app glue"))
             if evidence.has_function_bodies or evidence.has_initializer_bodies or evidence.has_class_declarations:
                 violations.append(Violation(source_file.path, "app-entry exemption must not contain service logic"))
 
         if reason == "view-adapter":
-            if source_file.language != "swift" or "SwiftUI" not in source_file.imports:
-                violations.append(Violation(source_file.path, "view-adapter exemption must import SwiftUI"))
             if evidence.has_class_declarations:
                 violations.append(Violation(source_file.path, "view-adapter exemption must not declare classes"))
 
@@ -511,8 +492,6 @@ def evaluate_exemption_admissibility(files: list[SourceFile]) -> list[Violation]
                 violations.append(Violation(source_file.path, "effect-facade exemption must not declare classes"))
 
         if reason == "principal-context":
-            if source_file.language != "go" or "context" not in source_file.imports:
-                violations.append(Violation(source_file.path, "principal-context exemption must be Go context glue"))
             if has_effects:
                 violations.append(Violation(source_file.path, "principal-context exemption must not touch effectful APIs"))
 
@@ -560,11 +539,10 @@ def evaluate_effect_boundaries(files: list[SourceFile]) -> list[Violation]:
 
 
 def evaluate_dependency_direction(files: list[SourceFile]) -> list[Violation]:
-    implementation_references_by_language_package: dict[tuple[str, str], set[str]] = {}
+    implementation_references_by_package: dict[str, set[str]] = {}
     for source_file in files:
         if source_file.metadata.module_type in {"shell", "state", "exempt"}:
-            key = (source_file.language, source_file.package)
-            implementation_references_by_language_package.setdefault(key, set()).update(
+            implementation_references_by_package.setdefault(source_file.package, set()).update(
                 source_file.decision_references
             )
 
@@ -572,9 +550,7 @@ def evaluate_dependency_direction(files: list[SourceFile]) -> list[Violation]:
     for source_file in files:
         if source_file.metadata.module_type not in {"core", "value"}:
             continue
-        forbidden_references = implementation_references_by_language_package.get(
-            (source_file.language, source_file.package), set()
-        )
+        forbidden_references = implementation_references_by_package.get(source_file.package, set())
         referenced_implementation = sorted(source_file.api_references.intersection(forbidden_references))
         if referenced_implementation:
             violations.append(
