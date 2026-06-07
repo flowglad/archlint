@@ -613,18 +613,27 @@ let interface_exports_for_file path =
   in
   { exported_values = facts.decision_surface; exported_references = facts.decision_references }
 
-let path_has_segment path segment =
-  String.split_on_char Filename.dir_sep.[0] path |> List.exists (( = ) segment)
+let test_library_identifiers =
+  StringSet.of_list
+    [
+      "Alcotest";
+      "Crowbar";
+      "Expect_test";
+      "Ppx_inline_test";
+      "QCheck";
+      "QCheck2";
+      "QCheck_alcotest";
+    ]
 
-let infer_test_scope root path =
-  let relative =
-    if String.starts_with ~prefix:root path then
-      String.sub path (String.length root) (String.length path - String.length root)
-    else path
-  in
-  if path_has_segment relative "test" || path_has_segment relative "lib_test"
-     || path_has_segment relative "fuzz"
-  then
+let references_test_library facts =
+  StringSet.exists
+    (fun name ->
+      StringSet.mem name facts.imports || StringSet.mem name facts.identifiers
+      || StringSet.mem name facts.api_references)
+    test_library_identifiers
+
+let infer_test_scope path facts =
+  if references_test_library facts then
     basename_without_extension path
   else ""
 
@@ -691,7 +700,7 @@ let shared_state_facts facts =
 let effectful_import_list imports =
   imports |> List.filter (fun import -> StringSet.mem import effectful_imports)
 
-let source_fact ~root ~interfaces path =
+let source_fact ~root:_ ~interfaces path =
   let source = read_file path in
   let metadata = parse_metadata source in
   let facts =
@@ -710,7 +719,7 @@ let source_fact ~root ~interfaces path =
   in
   {
     path;
-    test_scope = infer_test_scope root path;
+    test_scope = infer_test_scope path facts;
     metadata;
     imports = set_to_list facts.imports;
     identifiers = set_to_list facts.identifiers;

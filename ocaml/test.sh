@@ -5,7 +5,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 TMPDIR="${TMPDIR:-/tmp}/archlint-ocaml-fixture-$$"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-mkdir -p "$TMPDIR/lib" "$TMPDIR/test" "$TMPDIR/fuzz" "$TMPDIR/wasm"
+mkdir -p "$TMPDIR/lib" "$TMPDIR/test" "$TMPDIR/harnesses" "$TMPDIR/wasm"
 
 cat > "$TMPDIR/lib/decision.ml" <<'ML'
 (* @archlint.module core
@@ -36,16 +36,13 @@ let suite =
   ]
 ML
 
-cat > "$TMPDIR/fuzz/fuzz_decision.ml" <<'ML'
+cat > "$TMPDIR/harnesses/fuzz_decision.ml" <<'ML'
 (* @archlint.module test
    @archlint.domain demo.decision *)
 
-let suite =
-  [
-    QCheck2.Test.make ~name:"fuzz-like test scope"
-      QCheck2.Gen.(list small_int)
-      (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
-  ]
+let () =
+  Crowbar.add_test ~name:"dependency-defined test scope" [ Crowbar.int ] (fun x ->
+      ignore (Decision.decide x))
 ML
 
 cat > "$TMPDIR/wasm/export.ml" <<'ML'
