@@ -483,6 +483,25 @@ func WithPrincipal(ctx context.Context, principal string) context.Context {
 func TestLintBackendArchitectureRejectsOverbroadDomains(t *testing.T) {
 	files := map[string]string{}
 	for index := 0; index < 17; index++ {
+		files[fmt.Sprintf("internal/mail/decision%d.go", index)] = fmt.Sprintf(`// @archlint.module core
+// @archlint.domain overbroad.example
+package mail
+
+func Decide%d() bool {
+	return true
+}
+`, index)
+	}
+	backendRoot := newBackendFixture(t, files)
+
+	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
+		"domain has 17 production modules; maximum is 16",
+	})
+}
+
+func TestLintBackendArchitectureIgnoresInterfacesForDomainBreadth(t *testing.T) {
+	files := map[string]string{}
+	for index := 0; index < 17; index++ {
 		files[fmt.Sprintf("internal/mail/types%d.go", index)] = fmt.Sprintf(`// @archlint.module interface
 // @archlint.domain overbroad.example
 package mail
@@ -492,9 +511,7 @@ type State%d struct{}
 	}
 	backendRoot := newBackendFixture(t, files)
 
-	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"domain has 17 production modules; maximum is 16",
-	})
+	assertNoViolations(t, lintBackendArchitecture(backendRoot))
 }
 
 func TestLintBackendArchitectureRejectsEmptyOrEffectfulDecisionModule(t *testing.T) {

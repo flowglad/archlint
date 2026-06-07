@@ -565,7 +565,20 @@ assert_passes "$test_support_exemption_fixture"
 
 generic_domain_fixture="$(new_fixture generic-domain)"
 for index in $(seq 1 17); do
-  cat > "$generic_domain_fixture/apps/ios/MailApp/Backend/BroadDomain$index.swift" <<EOF
+  cat > "$generic_domain_fixture/apps/ios/MailApp/Backend/BroadDomainDecision$index.swift" <<EOF
+// @archlint.module core
+// @archlint.domain overbroad.example
+func decideBroadDomain$index() -> Bool {
+  true
+}
+EOF
+done
+assert_fails_with "$generic_domain_fixture" \
+  "domain has 17 production modules; maximum is 16"
+
+interface_generic_domain_fixture="$(new_fixture interface-generic-domain)"
+for index in $(seq 1 17); do
+  cat > "$interface_generic_domain_fixture/apps/ios/MailApp/Backend/BroadDomain$index.swift" <<EOF
 // @archlint.module interface
 // @archlint.domain overbroad.example
 struct BroadDomain$index {
@@ -573,8 +586,7 @@ struct BroadDomain$index {
 }
 EOF
 done
-assert_fails_with "$generic_domain_fixture" \
-  "domain has 17 production modules; maximum is 16"
+assert_passes "$interface_generic_domain_fixture"
 
 interface_with_logic_fixture="$(new_fixture interface-with-logic)"
 cat > "$interface_with_logic_fixture/apps/ios/MailApp/Backend/AddAccountRequest.swift" <<'EOF'
