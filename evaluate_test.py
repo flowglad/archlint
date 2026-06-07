@@ -47,10 +47,17 @@ def source_file(**overrides):
     return evaluate.parse_source_file(data)
 
 
-def property_check(references=None, interleaving=False):
+def generated_input(name="input", uses=None):
+    return {"name": name, "uses": [] if uses is None else uses}
+
+
+def property_check(references=None, interleaving=False, generated_inputs=None):
+    if generated_inputs is None:
+        generated_inputs = [generated_input(uses=[] if references is None else references)]
     return {
         "references": [] if references is None else references,
         "interleaving": interleaving,
+        "generatedInputs": generated_inputs,
     }
 
 
@@ -193,6 +200,70 @@ class EvaluateTests(unittest.TestCase):
         violations = evaluate.evaluate([core, linked_test])
 
         self.assertEqual([], violations)
+
+    def test_core_module_rejects_property_reference_without_generated_input_use(self):
+        core = source_file(path="/repo/Core.ml")
+        constant_property = source_file(
+            path="/repo/Core_test.ml",
+            testScope="CoreTest",
+            metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
+            identifiers=["decideSync"],
+            apiReferences=["decideSync"],
+            propertyChecks=[
+                property_check(["decideSync"], generated_inputs=[])
+            ],
+        )
+
+        violations = evaluate.evaluate([core, constant_property])
+
+        self.assertIn(
+            "core module property tests must reference every decision API: decideSync",
+            [violation.message for violation in violations],
+        )
+
+    def test_core_module_rejects_property_reference_with_unused_generated_input(self):
+        core = source_file(path="/repo/Core.ml")
+        ignored_input_property = source_file(
+            path="/repo/Core_test.ml",
+            testScope="CoreTest",
+            metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
+            identifiers=["decideSync"],
+            apiReferences=["decideSync"],
+            propertyChecks=[
+                property_check(
+                    ["decideSync"],
+                    generated_inputs=[generated_input("input", uses=[])],
+                )
+            ],
+        )
+
+        violations = evaluate.evaluate([core, ignored_input_property])
+
+        self.assertIn(
+            "core module property tests must reference every decision API: decideSync",
+            [violation.message for violation in violations],
+        )
+
+    def test_generated_input_uses_must_be_reachable_api_references(self):
+        source = source_file(
+            path="/repo/CoreTests.swift",
+            testScope="CoreTests",
+            metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
+            apiReferences=["decideSync"],
+            propertyChecks=[
+                property_check(
+                    ["decideSync"],
+                    generated_inputs=[generated_input("input", uses=["hiddenUse"])],
+                )
+            ],
+        )
+
+        violations = evaluate.evaluate([source])
+
+        self.assertIn(
+            "property generated input uses must be reachable API references: hiddenUse",
+            [violation.message for violation in violations],
+        )
 
     def test_core_module_exhaustive_property_surface_is_structural(self):
         core = source_file(
@@ -583,7 +654,14 @@ class EvaluateTests(unittest.TestCase):
         state_test = source_file(
             path="/repo/StoreTests.swift",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
-            propertyChecks=[property_check([], interleaving=True)],
+            apiReferences=["inputUse"],
+            propertyChecks=[
+                property_check(
+                    [],
+                    interleaving=True,
+                    generated_inputs=[generated_input("input", uses=["inputUse"])],
+                )
+            ],
         )
 
         violations = evaluate.evaluate([state_test])

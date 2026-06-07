@@ -44,10 +44,23 @@
     "propertyCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["references", "interleaving"],
+      "required": ["references", "interleaving", "generatedInputs"],
       "properties": {
         "references": { "$ref": "#/$defs/stringList" },
-        "interleaving": { "type": "boolean" }
+        "interleaving": { "type": "boolean" },
+        "generatedInputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/generatedInput" }
+        }
+      }
+    },
+    "generatedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "uses"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "uses": { "$ref": "#/$defs/stringList" }
       }
     },
     "sharedStateEvidence": {

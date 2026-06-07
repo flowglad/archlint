@@ -240,7 +240,10 @@ package httpapi
 
 type RoutePlan struct{}
 
-func DecideRoute() RoutePlan {
+func DecideRoute(input bool) RoutePlan {
+	if input {
+		return RoutePlan{}
+	}
 	return RoutePlan{}
 }
 `,
@@ -255,7 +258,7 @@ import (
 
 func TestDecideRouteProperty(t *testing.T) {
 	property := func(input bool) bool {
-		_ = DecideRoute()
+		_ = DecideRoute(input)
 		return input == input
 	}
 	if err := quick.Check(property, nil); err != nil {
@@ -974,7 +977,7 @@ func TestDecisionInterleavingsProperty(t *testing.T) {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"stateTest module interleavings must reference reachable APIs",
+		"stateTest module must contain property interleavings",
 	})
 }
 

@@ -175,8 +175,8 @@ cat > "$passing_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <
 // @archlint.module core
 // @archlint.domain backend.http
 enum HTTPMailBackendDecider {
-  static func decidePath() -> String {
-    "/v1/accounts"
+  static func decidePath(_ shard: Int) -> String {
+    shard >= 0 ? "/v1/accounts" : "/v1/accounts"
   }
 }
 EOF
@@ -189,14 +189,14 @@ import XCTest
 
 final class HTTPMailBackendDeciderTests: XCTestCase {
   func testPath() {
-    XCTAssertEqual(HTTPMailBackendDecider.decidePath(), "/v1/accounts")
+    XCTAssertEqual(HTTPMailBackendDecider.decidePath(0), "/v1/accounts")
   }
 }
 
 @Test
 func pathProperty() async {
-  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
-    #expect(HTTPMailBackendDecider.decidePath() == "/v1/accounts")
+  await propertyCheck(input: Gen.int(in: 0...10)) { shard in
+    #expect(HTTPMailBackendDecider.decidePath(shard) == "/v1/accounts")
   }
 }
 EOF
@@ -207,7 +207,7 @@ import Foundation
 
 final class HTTPMailBackendClient {
   func makeRequest() -> URLRequest {
-    let path = HTTPMailBackendDecider.decidePath()
+    let path = HTTPMailBackendDecider.decidePath(0)
     let url = URL(string: "http://localhost" + path)!
     return URLRequest(url: url)
   }
@@ -228,8 +228,8 @@ cat > "$missing_core_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendD
 // @archlint.module core
 // @archlint.domain backend.http
 enum HTTPMailBackendDecider {
-  static func decidePath() -> String {
-    "/v1/accounts"
+  static func decidePath(_ shard: Int) -> String {
+    shard >= 0 ? "/v1/accounts" : "/v1/accounts"
   }
 }
 EOF
@@ -299,8 +299,8 @@ cat > "$static_property_decision_surface_fixture/apps/ios/MailApp/Backend/SQLite
 enum SQLiteMailSyncStateDecider {
   static let createTablesSQL: String = "CREATE TABLE messages(id TEXT)"
 
-  static func loadedState() -> String {
-    "loaded"
+  static func loadedState(_ shard: Int) -> String {
+    shard >= 0 ? "loaded" : "loaded"
   }
 }
 EOF
@@ -312,8 +312,8 @@ import Testing
 
 @Test
 func schemaProperty() async {
-  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
-    #expect(SQLiteMailSyncStateDecider.loadedState() == "loaded")
+  await propertyCheck(input: Gen.int(in: 0...10)) { shard in
+    #expect(SQLiteMailSyncStateDecider.loadedState(shard) == "loaded")
   }
 }
 EOF
@@ -659,8 +659,8 @@ enum HTTPMailBackendDecider {
     case add
   }
 
-  static func decide() -> Decision {
-    .add
+  static func decide(_ shard: Int) -> Decision {
+    shard >= 0 ? .add : .add
   }
 }
 EOF
@@ -672,8 +672,8 @@ import Testing
 
 @Test
 func decisionProperty() async {
-  await propertyCheck(input: Gen.int(in: 0...10)) { _ in
-    #expect(HTTPMailBackendDecider.decide() == .add)
+  await propertyCheck(input: Gen.int(in: 0...10)) { shard in
+    #expect(HTTPMailBackendDecider.decide(shard) == .add)
   }
 }
 EOF
@@ -876,13 +876,13 @@ import Testing
 enum HTTPMailBackendDeciderPropertySuite {
   @Test
   static func pathProperty() async {
-    await propertyCheck(input: Gen.int(in: 0...10)) { _ in
-      #expect(helperPath() == "/v1/accounts")
+    await propertyCheck(input: Gen.int(in: 0...10)) { shard in
+      #expect(helperPath(shard) == "/v1/accounts")
     }
   }
 
-  static func helperPath() -> String {
-    HTTPMailBackendDecider.decidePath()
+  static func helperPath(_ shard: Int) -> String {
+    HTTPMailBackendDecider.decidePath(shard)
   }
 }
 EOF
@@ -1057,7 +1057,7 @@ enum SQLiteMailSyncStateDeciderPropertySuite {
 }
 EOF
 assert_fails_with "$state_test_interleavings_without_refs_fixture" \
-  "stateTest module interleavings must reference reachable APIs"
+  "stateTest module must contain property interleavings"
 
 state_test_interleavings_without_core_refs_fixture="$(new_fixture state-test-interleavings-without-core-refs)"
 cat > "$state_test_interleavings_without_core_refs_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'

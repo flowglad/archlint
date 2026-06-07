@@ -65,9 +65,17 @@ class InterfaceLogicEvidence:
 
 
 @dataclass(frozen=True)
+class GeneratedInput:
+    name: str
+    uses: set[str]
+
+
+@dataclass(frozen=True)
 class PropertyCheck:
     references: set[str]
     interleaving: bool
+    generated_inputs: tuple[GeneratedInput, ...]
+    has_generated_input_use: bool
 
 
 @dataclass(frozen=True)
@@ -247,12 +255,18 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         PropertyCheck(
             references=set(check["references"]),
             interleaving=check["interleaving"],
+            generated_inputs=tuple(
+                GeneratedInput(name=input_item["name"], uses=set(input_item["uses"]))
+                for input_item in check["generatedInputs"]
+            ),
+            has_generated_input_use=any(input_item["uses"] for input_item in check["generatedInputs"]),
         )
         for check in item["propertyChecks"]
     )
-    property_test_references = set().union(*(check.references for check in property_checks), set())
+    meaningful_property_checks = tuple(check for check in property_checks if check.has_generated_input_use)
+    property_test_references = set().union(*(check.references for check in meaningful_property_checks), set())
     property_interleaving_references = set().union(
-        *(check.references for check in property_checks if check.interleaving),
+        *(check.references for check in meaningful_property_checks if check.interleaving),
         set(),
     )
     shared_state = tuple(
@@ -286,7 +300,7 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         property_checks=property_checks,
         has_property_test=bool(property_checks),
         property_test_references=property_test_references,
-        has_property_interleavings=any(check.interleaving for check in property_checks),
+        has_property_interleavings=any(check.interleaving for check in meaningful_property_checks),
         property_interleaving_references=property_interleaving_references,
         interface_logic_evidence=InterfaceLogicEvidence(
             function_bodies=set(interface_logic_evidence["functionBodies"]),
@@ -351,6 +365,21 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
                     source_file.path,
                     "property test references must be reachable API references: "
                     + ", ".join(references_outside_property),
+                )
+            )
+        generated_input_uses = set().union(
+            *(generated_input.uses for check in source_file.property_checks for generated_input in check.generated_inputs),
+            set(),
+        )
+        generated_input_uses_outside_api_references = sorted(
+            generated_input_uses - source_file.api_references
+        )
+        if generated_input_uses_outside_api_references:
+            violations.append(
+                Violation(
+                    source_file.path,
+                    "property generated input uses must be reachable API references: "
+                    + ", ".join(generated_input_uses_outside_api_references),
                 )
             )
         surface_outside_identifiers = sorted(source_file.decision_surface - source_file.identifiers)

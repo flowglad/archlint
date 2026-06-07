@@ -55,8 +55,14 @@ type sharedStateFact struct {
 }
 
 type propertyCheckFact struct {
-	References   []string `json:"references"`
-	Interleaving bool     `json:"interleaving"`
+	References      []string             `json:"references"`
+	Interleaving    bool                 `json:"interleaving"`
+	GeneratedInputs []generatedInputFact `json:"generatedInputs"`
+}
+
+type generatedInputFact struct {
+	Name string   `json:"name"`
+	Uses []string `json:"uses"`
 }
 
 type architectureMetadataFact struct {
@@ -689,8 +695,14 @@ type goPropertyEvidenceResult struct {
 }
 
 type goPropertyCheckEvidence struct {
-	references   map[string]struct{}
-	interleaving bool
+	references      map[string]struct{}
+	interleaving    bool
+	generatedInputs []goGeneratedInputEvidence
+}
+
+type goGeneratedInputEvidence struct {
+	name string
+	uses map[string]struct{}
 }
 
 func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
@@ -719,8 +731,9 @@ func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
 				}
 			}
 			result.checks = append(result.checks, goPropertyCheckEvidence{
-				references:   references,
-				interleaving: goFunctionHasSliceParameter(propertyFunction),
+				references:      references,
+				interleaving:    goFunctionHasSliceParameter(propertyFunction),
+				generatedInputs: goGeneratedInputEvidenceForProperty(propertyFunction, propertyFunctions),
 			})
 			return true
 		})
@@ -732,8 +745,20 @@ func goPropertyCheckFacts(evidence goPropertyEvidenceResult) []propertyCheckFact
 	facts := make([]propertyCheckFact, 0, len(evidence.checks))
 	for _, check := range evidence.checks {
 		facts = append(facts, propertyCheckFact{
-			References:   setToSortedSlice(check.references),
-			Interleaving: check.interleaving,
+			References:      setToSortedSlice(check.references),
+			Interleaving:    check.interleaving,
+			GeneratedInputs: goGeneratedInputFacts(check.generatedInputs),
+		})
+	}
+	return facts
+}
+
+func goGeneratedInputFacts(evidence []goGeneratedInputEvidence) []generatedInputFact {
+	facts := make([]generatedInputFact, 0, len(evidence))
+	for _, input := range evidence {
+		facts = append(facts, generatedInputFact{
+			Name: input.name,
+			Uses: setToSortedSlice(input.uses),
 		})
 	}
 	return facts
@@ -846,6 +871,110 @@ func goReachablePropertyReferences(
 		}
 	}
 	return references
+}
+
+func goGeneratedInputEvidenceForProperty(
+	propertyFunction *goPropertyFunction,
+	propertyFunctions map[string]goPropertyFunction,
+) []goGeneratedInputEvidence {
+	if propertyFunction == nil || propertyFunction.functionType == nil || propertyFunction.functionType.Params == nil {
+		return []goGeneratedInputEvidence{}
+	}
+	inputs := []goGeneratedInputEvidence{}
+	for _, field := range propertyFunction.functionType.Params.List {
+		for _, name := range field.Names {
+			if name.Name == "" || name.Name == "_" {
+				continue
+			}
+			inputs = append(inputs, goGeneratedInputEvidence{
+				name: name.Name,
+				uses: goGeneratedInputUses(propertyFunction.body, name.Name, propertyFunctions),
+			})
+		}
+	}
+	return inputs
+}
+
+func goGeneratedInputUses(
+	root ast.Node,
+	name string,
+	propertyFunctions map[string]goPropertyFunction,
+) map[string]struct{} {
+	uses := map[string]struct{}{}
+	ast.Inspect(root, func(node ast.Node) bool {
+		switch typedNode := node.(type) {
+		case *ast.CallExpr:
+			if goNodeContainsIdent(typedNode, name) {
+				for reference := range goExpandedReferences(goAPIReferencesFromNode(typedNode), propertyFunctions) {
+					uses[reference] = struct{}{}
+				}
+			}
+		case *ast.RangeStmt:
+			if goNodeContainsIdent(typedNode.X, name) {
+				for reference := range goExpandedReferences(goAPIReferencesFromNode(typedNode.Body), propertyFunctions) {
+					uses[reference] = struct{}{}
+				}
+			}
+		}
+		return true
+	})
+	return uses
+}
+
+func goExpandedReferences(
+	references map[string]struct{},
+	propertyFunctions map[string]goPropertyFunction,
+) map[string]struct{} {
+	expanded := map[string]struct{}{}
+	for reference := range references {
+		expanded[reference] = struct{}{}
+	}
+	for reference := range goReachableReferencesFromNames(references, propertyFunctions, map[string]bool{}) {
+		expanded[reference] = struct{}{}
+	}
+	return expanded
+}
+
+func goReachableReferencesFromNames(
+	references map[string]struct{},
+	propertyFunctions map[string]goPropertyFunction,
+	visited map[string]bool,
+) map[string]struct{} {
+	reachable := map[string]struct{}{}
+	for reference := range references {
+		if visited[reference] {
+			continue
+		}
+		referencedFunction, ok := propertyFunctions[reference]
+		if !ok {
+			continue
+		}
+		visited[reference] = true
+		nestedReferences := goAPIReferencesFromNode(referencedFunction.body)
+		for nestedReference := range nestedReferences {
+			reachable[nestedReference] = struct{}{}
+		}
+		for nestedReference := range goReachableReferencesFromNames(nestedReferences, propertyFunctions, visited) {
+			reachable[nestedReference] = struct{}{}
+		}
+	}
+	return reachable
+}
+
+func goNodeContainsIdent(root ast.Node, name string) bool {
+	found := false
+	ast.Inspect(root, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if ok && identifier.Name == name {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func goFunctionHasSliceParameter(propertyFunction *goPropertyFunction) bool {

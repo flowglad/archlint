@@ -99,8 +99,12 @@ checks_by_file = {item["path"]: item["propertyChecks"] for item in document["fil
 ordinary = [checks for path, checks in checks_by_file.items() if path.endswith("test_decision.ml")][0]
 state = [checks for path, checks in checks_by_file.items() if path.endswith("test_state.ml")][0]
 assert ordinary and ordinary[0]["interleaving"] is False, ordinary
+assert ordinary[0]["generatedInputs"], ordinary
+assert ordinary[0]["generatedInputs"][0]["name"] == "xs", ordinary
+assert "decide" in ordinary[0]["generatedInputs"][0]["uses"], ordinary
 assert state and state[0]["interleaving"] is True, state
 assert "decide" in state[0]["references"], state
+assert "decide" in state[0]["generatedInputs"][0]["uses"], state
 handler = [item for item in document["files"] if item["path"].endswith("handler.ml")][0]
 assert "Unix" in handler["effectfulIdentifiers"], handler
 fuzz = [item for item in document["files"] if item["path"].endswith("fuzz_decision.ml")][0]
@@ -111,3 +115,32 @@ assert "Js" in export["effectfulIdentifiers"], export
 counter = [item for item in document["files"] if item["path"].endswith("counter.ml")][0]
 assert counter["sharedState"], counter
 PY
+
+cat > "$TMPDIR/lib/constant_only.ml" <<'ML'
+(* @archlint.module core
+   @archlint.domain demo.constant *)
+
+let decide x =
+  if x > 0 then `Positive else `Non_positive
+ML
+
+cat > "$TMPDIR/test/test_constant_only.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.constant *)
+
+let suite =
+  [
+    QCheck2.Test.make ~name:"constant assertion"
+      QCheck2.Gen.unit
+      (fun () -> match Constant_only.decide 1 with _ -> true);
+  ]
+ML
+
+if dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . \
+  | uv run --project "$ROOT" python "$ROOT/evaluate.py" >"$TMPDIR/constant.out"
+then
+  echo "constant generated-input property unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "core module property tests must reference every decision API: decide" "$TMPDIR/constant.out" \
+  || cat "$TMPDIR/constant.out" >&2

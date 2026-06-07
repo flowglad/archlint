@@ -133,6 +133,12 @@ struct SharedStateFact: Encodable {
 struct PropertyCheckFact: Encodable {
   let references: [String]
   let interleaving: Bool
+  let generatedInputs: [GeneratedInputFact]
+}
+
+struct GeneratedInputFact: Encodable {
+  let name: String
+  let uses: [String]
 }
 
 struct MetadataFact: Encodable {
@@ -296,7 +302,11 @@ enum SwiftArchLint {
       propertyChecks: metadata.moduleType == "stateTest"
         ? visitor.propertyChecks
         : visitor.propertyChecks.map { check in
-          PropertyCheckFact(references: check.references, interleaving: false)
+          PropertyCheckFact(
+            references: check.references,
+            interleaving: false,
+            generatedInputs: check.generatedInputs
+          )
         }
     )
   }
@@ -486,7 +496,8 @@ final class ArchitectureVisitor: SyntaxVisitor {
     propertyChecks.append(
       PropertyCheckFact(
         references: Array(Set(expandedReferences)).sorted(),
-        interleaving: isInterleaving
+        interleaving: isInterleaving,
+        generatedInputs: generatedInputFacts(for: node)
       )
     )
     return .visitChildren
@@ -647,6 +658,56 @@ final class ArchitectureVisitor: SyntaxVisitor {
     return referenceVisitor
   }
 
+  private func generatedInputFacts(for node: FunctionCallExprSyntax) -> [GeneratedInputFact] {
+    propertyClosureParameters(for: node).map { name in
+      let visitor: GeneratedInputUseVisitor = GeneratedInputUseVisitor(
+        inputName: name,
+        viewMode: .sourceAccurate
+      )
+      if let trailingClosure: ClosureExprSyntax = node.trailingClosure {
+        visitor.walk(trailingClosure)
+      }
+      for argument: LabeledExprSyntax in node.arguments {
+        if let closure: ClosureExprSyntax = argument.expression.as(ClosureExprSyntax.self) {
+          visitor.walk(closure)
+        }
+      }
+      return GeneratedInputFact(
+        name: name,
+        uses: Array(
+          Set(expandedAPIReferences(from: visitor.uses, visited: []))
+        ).sorted()
+      )
+    }
+  }
+
+  private func propertyClosureParameters(for node: FunctionCallExprSyntax) -> [String] {
+    var names: [String] = []
+    if let trailingClosure: ClosureExprSyntax = node.trailingClosure {
+      names.append(contentsOf: closureParameterNames(trailingClosure))
+    }
+    for argument: LabeledExprSyntax in node.arguments {
+      if let closure: ClosureExprSyntax = argument.expression.as(ClosureExprSyntax.self) {
+        names.append(contentsOf: closureParameterNames(closure))
+      }
+    }
+    return names.filter { !$0.isEmpty && $0 != "_" }
+  }
+
+  private func closureParameterNames(_ closure: ClosureExprSyntax) -> [String] {
+    guard let parameterClause: ClosureSignatureSyntax.ParameterClause = closure.signature?.parameterClause else {
+      return []
+    }
+    switch parameterClause {
+    case .simpleInput(let parameters):
+      return parameters.map { $0.name.text }
+    case .parameterClause(let parameterClause):
+      return parameterClause.parameters.map { parameter in
+        (parameter.secondName ?? parameter.firstName).text
+      }
+    }
+  }
+
   private func recordIdentifier(_ name: String) {
     if !name.isEmpty {
       identifiers.append(name)
@@ -772,6 +833,62 @@ final class APIReferenceVisitor: SyntaxVisitor {
     if !name.isEmpty {
       apiReferences.append(name)
     }
+  }
+}
+
+final class GeneratedInputUseVisitor: SyntaxVisitor {
+  let inputName: String
+  private(set) var uses: [String] = []
+
+  init(inputName: String, viewMode: SyntaxTreeViewMode) {
+    self.inputName = inputName
+    super.init(viewMode: viewMode)
+  }
+
+  override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+    let inputVisitor: IdentifierUseVisitor = IdentifierUseVisitor(
+      name: inputName,
+      viewMode: .sourceAccurate
+    )
+    inputVisitor.walk(node)
+    if inputVisitor.found {
+      let referenceVisitor: APIReferenceVisitor = APIReferenceVisitor(viewMode: .sourceAccurate)
+      referenceVisitor.walk(node)
+      uses.append(contentsOf: referenceVisitor.apiReferences)
+    }
+    return .visitChildren
+  }
+
+  override func visit(_ node: ForStmtSyntax) -> SyntaxVisitorContinueKind {
+    let inputVisitor: IdentifierUseVisitor = IdentifierUseVisitor(
+      name: inputName,
+      viewMode: .sourceAccurate
+    )
+    inputVisitor.walk(node.sequence)
+    if inputVisitor.found {
+      let referenceVisitor: APIReferenceVisitor = APIReferenceVisitor(viewMode: .sourceAccurate)
+      referenceVisitor.walk(node.body)
+      uses.append(contentsOf: referenceVisitor.apiReferences)
+    }
+    return .visitChildren
+  }
+}
+
+final class IdentifierUseVisitor: SyntaxVisitor {
+  let name: String
+  private(set) var found: Bool = false
+
+  init(name: String, viewMode: SyntaxTreeViewMode) {
+    self.name = name
+    super.init(viewMode: viewMode)
+  }
+
+  override func visit(_ node: DeclReferenceExprSyntax) -> SyntaxVisitorContinueKind {
+    if node.baseName.text == name {
+      found = true
+      return .skipChildren
+    }
+    return .visitChildren
   }
 }
 

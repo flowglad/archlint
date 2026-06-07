@@ -12,7 +12,12 @@ type metadata = {
   exempt_reason : string;
 }
 
-type property_check = { references : string list; interleaving : bool }
+type generated_input = { name : string; uses : string list }
+type property_check = {
+  references : string list;
+  interleaving : bool;
+  generated_inputs : generated_input list;
+}
 type shared_state = { kind : string; references : string list }
 
 type interface_logic_evidence = {
@@ -392,6 +397,28 @@ let function_body_argument args =
   |> List.find_map (fun (_label, expression) ->
          if expression_is_function expression then Some expression else None)
 
+let rec function_argument_patterns expression =
+  match expression.pexp_desc with
+  | Pexp_function (params, _, body) ->
+      let param_patterns =
+        params
+        |> List.filter_map (fun param ->
+               match param.pparam_desc with
+               | Pparam_val (_, _, pattern) -> Some pattern
+               | Pparam_newtype _ -> None)
+      in
+      let body_patterns =
+        match body with
+        | Pfunction_body body -> function_argument_patterns body
+        | Pfunction_cases (cases, _, _) ->
+            cases
+            |> List.concat_map (fun case ->
+                   case.pc_lhs :: function_argument_patterns case.pc_rhs)
+      in
+      param_patterns @ body_patterns
+  | Pexp_constraint (inner, _) | Pexp_coerce (inner, _, _) -> function_argument_patterns inner
+  | _ -> []
+
 let rec expanded_api_references facts references visited =
   StringSet.fold
     (fun reference acc ->
@@ -404,6 +431,53 @@ let rec expanded_api_references facts references visited =
         | Some helper_references ->
             StringSet.union direct (expanded_api_references facts helper_references visited))
     references StringSet.empty
+
+let expression_contains_identifier name expression =
+  let found = ref false in
+  let iterator =
+    {
+      Ast_iterator.default_iterator with
+      expr =
+        (fun self expression ->
+        (match expression.pexp_desc with
+        | Pexp_ident lid when lid_last lid = name -> found := true
+        | _ -> ());
+        Ast_iterator.default_iterator.expr self expression);
+    }
+  in
+  iterator.expr iterator expression;
+  !found
+
+let generated_input_uses facts body name =
+  let uses = ref StringSet.empty in
+  let record expression =
+    if expression_contains_identifier name expression then
+      uses :=
+        StringSet.union !uses
+          (expanded_api_references facts
+             (api_references_in_expression expression)
+             StringSet.empty)
+  in
+  let iterator =
+    {
+      Ast_iterator.default_iterator with
+      expr =
+        (fun self expression ->
+        (match expression.pexp_desc with
+        | Pexp_apply _ -> record expression
+        | _ -> ());
+        Ast_iterator.default_iterator.expr self expression);
+    }
+  in
+  iterator.expr iterator body;
+  set_to_list !uses
+
+let generated_inputs_for_property facts body =
+  function_argument_patterns body
+  |> List.concat_map (fun pattern ->
+         pattern_names pattern |> StringSet.elements
+         |> List.filter is_bindable_name
+         |> List.map (fun name -> { name; uses = generated_input_uses facts body name }))
 
 let rec collect_structure_item facts item =
   match item.pstr_desc with
@@ -526,8 +600,9 @@ let collect_expression_facts facts expression =
             | Pexp_ident lid -> record_longident facts lid
             | _ -> ());
             if is_property_test_call called then
+              let property_body = function_body_argument args in
               let references =
-                match function_body_argument args with
+                match property_body with
                 | Some body ->
                     expanded_api_references facts
                       (api_references_in_expression body)
@@ -535,12 +610,18 @@ let collect_expression_facts facts expression =
                     |> set_to_list
                 | None -> []
               in
+              let generated_inputs =
+                match property_body with
+                | Some body -> generated_inputs_for_property facts body
+                | None -> []
+              in
               let interleaving =
                 List.exists
                   (fun (_label, argument) -> expression_contains_interleaving_generator argument)
                   args
               in
-              facts.property_checks <- { references; interleaving } :: facts.property_checks
+              facts.property_checks <-
+                { references; interleaving; generated_inputs } :: facts.property_checks
         | Pexp_ifthenelse _ -> facts.control_flow <- add facts.control_flow "if"
         | Pexp_match _ -> facts.control_flow <- add facts.control_flow "match"
         | Pexp_for _ -> facts.control_flow <- add facts.control_flow "for"
@@ -657,11 +738,15 @@ let metadata_to_json metadata =
       ("exemptReason", `String metadata.exempt_reason);
     ]
 
+let generated_input_to_json (input : generated_input) =
+  `Assoc [ ("name", `String input.name); ("uses", json_string_list input.uses) ]
+
 let property_check_to_json (check : property_check) =
   `Assoc
     [
       ("references", json_string_list check.references);
       ("interleaving", `Bool check.interleaving);
+      ("generatedInputs", `List (List.map generated_input_to_json check.generated_inputs));
     ]
 
 let shared_state_to_json (evidence : shared_state) =
