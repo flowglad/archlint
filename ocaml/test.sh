@@ -7,7 +7,7 @@ ARCHLINT_ROOT="$ROOT"
 TMPDIR="${TMPDIR:-/tmp}/archlint-ocaml-fixture-$$"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-mkdir -p "$TMPDIR/lib" "$TMPDIR/test" "$TMPDIR/harnesses" "$TMPDIR/wasm"
+mkdir -p "$TMPDIR/lib" "$TMPDIR/pp" "$TMPDIR/test" "$TMPDIR/harnesses" "$TMPDIR/wasm"
 
 cat > "$TMPDIR/dune-project" <<'DUNE'
 (lang dune 3.21)
@@ -21,12 +21,23 @@ cat > "$TMPDIR/lib/dune" <<'DUNE'
  (libraries unix))
 DUNE
 
+cat > "$TMPDIR/pp/dune" <<'DUNE'
+(library
+ (name fixture_pp)
+ (wrapped false)
+ (modules :standard)
+ (libraries fixture_lib)
+ (preprocess
+  (action
+   (run cat %{input-file}))))
+DUNE
+
 cat > "$TMPDIR/test/dune" <<'DUNE'
 (library
  (name fixture_tests)
  (wrapped false)
  (modules :standard)
- (libraries fixture_lib))
+ (libraries fixture_lib fixture_pp))
 DUNE
 
 cat > "$TMPDIR/harnesses/dune" <<'DUNE'
@@ -132,6 +143,27 @@ open Js_of_ocaml
 let () =
   Js.export "demo"
     Decision.decide
+ML
+
+# Dune action preprocessing records the typedtree source as [*.pp.ml].
+# The adapter must map that generated source path back to the real source file.
+cat > "$TMPDIR/pp/preprocessed_core.ml" <<'ML'
+(* @archlint.module core
+   @archlint.domain demo.preprocessed *)
+
+let decide_preprocessed x = x >= 0
+ML
+
+cat > "$TMPDIR/test/test_preprocessed_core.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.preprocessed *)
+
+let prop =
+  QCheck2.Test.make ~name:"preprocessed core"
+    QCheck2.Gen.small_int
+    (fun x -> Preprocessed_core.decide_preprocessed x || x < 0)
+
+let () = ignore prop
 ML
 
 # Call-graph closure for property coverage: a core whose three decision APIs
