@@ -88,6 +88,56 @@ The Python evaluator is managed with `uv`. Dependencies are declared in `pyproje
 uv sync --project .
 ```
 
+## CI in consumer repositories
+
+Archlint ships a composite GitHub Action so a consumer repo can run it with a
+single step. GitHub checks archlint out into the action path automatically, so
+nothing is cloned by hand: the action brings the Python evaluator plus the
+toolchain for the one adapter you select, then runs `evaluate.py` against the
+calling repository.
+
+```yaml
+# flowglad/onton — OCaml
+jobs:
+  archlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flowglad/archlint@v1
+        with:
+          adapter: ocaml
+          ocaml-root: .
+```
+
+```yaml
+# flowglad/provisioning-agent — TypeScript
+jobs:
+  archlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flowglad/archlint@v1
+        with:
+          adapter: typescript
+          typescript-root: .
+```
+
+Action inputs:
+
+- `adapter` (required): `go`, `ocaml`, `swift`, or `typescript`. One adapter per
+  step; add another step to run a second adapter.
+- `repo-root`: repository root to analyze. Defaults to the consumer checkout
+  (`${{ github.workspace }}`).
+- `ocaml-root` / `typescript-root`: source root relative to `repo-root`.
+  Defaults to `.`.
+- `go-module` (required for `go`) / `go-packages` (defaults to `./...`).
+- `swift-xcodegen` (required for `swift`): XcodeGen manifest relative to
+  `repo-root`. Run the `swift` adapter on a `macos-latest` job.
+- `python-version`: evaluator Python version. Defaults to `3.14`.
+
+Pin to a moving major tag (`@v1`) so archlint policy updates reach consumers
+automatically, or to a commit SHA if a repo needs to opt out of that.
+
 ## Module Metadata
 
 Every Go, OCaml, and Swift source module in application code must declare architecture metadata:
