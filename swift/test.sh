@@ -90,10 +90,8 @@ struct AddAccountRequest: Equatable {
 EOF
 assert_passes "$passing_fixture"
 
-# The shell references the core via a type-qualified member access
-# (HTTPMailBackendDecider.decidePath), which the adapter records in Base.member
-# form; moduleName is the file's own type. This is the data the
-# dependency-direction rule matches on (qualified, not bare).
+# Patch 7 is schema-only for Swift: moduleName is present, while
+# qualifiedReferences stays empty until semantic resolution lands in patch 8.
 run_adapter "$passing_fixture" > "$tmp_root/passing-facts.json"
 assert_facts "$tmp_root/passing-facts.json" <<'PY'
 import json
@@ -102,9 +100,63 @@ import sys
 document = json.load(open(sys.argv[1], encoding="utf-8"))
 shell = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendClient.swift")][0]
 assert shell["moduleName"] == "HTTPMailBackendClient", shell
-assert "HTTPMailBackendDecider.decidePath" in shell["qualifiedReferences"], shell
+assert shell["qualifiedReferences"] == [], shell
 core = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendDecider.swift")][0]
 assert core["moduleName"] == "HTTPMailBackendDecider", core
+assert core["qualifiedReferences"] == [], core
+PY
+
+cross_file_bare_reference_fixture="$(new_fixture cross-file-bare-reference)"
+cat > "$cross_file_bare_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.http
+enum HTTPMailBackendDecider {
+  static func decidePath(_ shard: Int) -> String {
+    shard >= 0 ? "/v1/accounts" : "/v1/accounts"
+  }
+}
+EOF
+cat > "$cross_file_bare_reference_fixture/apps/ios/MailAppTests/HTTPMailBackendDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.http
+import PropertyBased
+import Testing
+
+@Test
+func pathProperty() async {
+  await propertyCheck(input: Gen.int(in: 0...10)) { shard in
+    #expect(HTTPMailBackendDecider.decidePath(shard) == "/v1/accounts")
+  }
+}
+EOF
+cat > "$cross_file_bare_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.http
+import Foundation
+
+func decidePathForRequest(_ shard: Int) -> String {
+  HTTPMailBackendDecider.decidePath(shard)
+}
+
+final class HTTPMailBackendClient {
+  func makeRequest() -> URLRequest {
+    let path = decidePathForRequest(0)
+    let url = URL(string: "http://localhost" + path)!
+    return URLRequest(url: url)
+  }
+}
+EOF
+# PENDING: Patch 8
+# Semantic resolution should attribute the bare cross-file decidePathForRequest
+# call back to HTTPMailBackendDecider.decidePath and emit it in qualifiedReferences.
+run_adapter "$cross_file_bare_reference_fixture" > "$tmp_root/cross-file-bare-reference-facts.json"
+assert_facts "$tmp_root/cross-file-bare-reference-facts.json" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+shell = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendClient.swift")][0]
+assert shell["qualifiedReferences"] == [], shell
 PY
 
 missing_core_reference_fixture="$(new_fixture missing-core-reference)"
