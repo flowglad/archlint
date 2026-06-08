@@ -513,7 +513,7 @@ final class ArchitectureVisitor: SyntaxVisitor {
     guard isPropertyCheckCall(node) else {
       return .visitChildren
     }
-    let referenceVisitor: APIReferenceVisitor = propertyClosureReferenceVisitor(for: node)
+    let referenceVisitor: APIReferenceVisitor = propertyConstructionReferenceVisitor(for: node)
     let expandedReferences: [String] = expandedAPIReferences(
       from: referenceVisitor.apiReferences,
       visited: []
@@ -674,18 +674,11 @@ final class ArchitectureVisitor: SyntaxVisitor {
     }
   }
 
-  private func propertyClosureReferenceVisitor(
+  private func propertyConstructionReferenceVisitor(
     for node: FunctionCallExprSyntax
   ) -> APIReferenceVisitor {
     let referenceVisitor: APIReferenceVisitor = APIReferenceVisitor(viewMode: .sourceAccurate)
-    if let trailingClosure: ClosureExprSyntax = node.trailingClosure {
-      referenceVisitor.walk(trailingClosure)
-    }
-    for argument: LabeledExprSyntax in node.arguments {
-      if let closure: ClosureExprSyntax = argument.expression.as(ClosureExprSyntax.self) {
-        referenceVisitor.walk(closure)
-      }
-    }
+    referenceVisitor.walk(node)
     return referenceVisitor
   }
 

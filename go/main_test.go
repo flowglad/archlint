@@ -263,6 +263,40 @@ func DecideSend() string {
 	}
 }
 
+func TestLintBackendArchitectureCoversDecisionReachedThroughPropertyHelper(t *testing.T) {
+	backendRoot := newBackendFixture(t, map[string]string{
+		"internal/routing/decision.go": `// @archlint.module core
+// @archlint.domain routing
+package routing
+
+func Decide(x int) bool { return x > 0 }
+`,
+		"internal/routing/decision_test.go": `// @archlint.module test
+// @archlint.domain routing
+package routing
+
+import (
+	"testing"
+	"testing/quick"
+)
+
+// makeProp builds the property behind a higher-order helper, so Decide is named
+// only at the quick.Check call site, not inside the resolved property body.
+func makeProp(decide func(int) bool) func(int) bool {
+	return func(x int) bool { return decide(x) || x <= 0 }
+}
+
+func TestDecideProperty(t *testing.T) {
+	if err := quick.Check(makeProp(Decide), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+`,
+	})
+
+	assertNoViolations(t, lintBackendArchitecture(backendRoot))
+}
+
 func TestLintBackendArchitectureRejectsHandlerWithOnlyArbitraryCoreTypeReference(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/httpapi/http_decision.go": `// @archlint.module core

@@ -265,6 +265,61 @@ struct SQLiteMailSyncStateSchema {
 EOF
 assert_passes "$static_property_decision_surface_fixture"
 
+closure_fixture="$(new_fixture closure)"
+cat > "$closure_fixture/apps/ios/MailApp/Backend/ClosureDecider.swift" <<'EOF'
+// @archlint.module core
+// @archlint.domain backend.closure
+enum ClosureDecider {
+  static func decideA(_ shard: Int) -> Bool {
+    shard >= 0
+  }
+
+  static func decideB(_ shard: Int) -> Bool {
+    shard < 0
+  }
+
+  static func decideC(_ shard: Int) -> Bool {
+    shard == 0
+  }
+}
+EOF
+cat > "$closure_fixture/apps/ios/MailAppTests/ClosureDeciderTests.swift" <<'EOF'
+// @archlint.module test
+// @archlint.domain backend.closure
+import PropertyBased
+import Testing
+
+func helper(_ shard: Int) -> Bool {
+  ClosureDecider.decideC(shard)
+}
+
+@Test
+func closureProperty() async {
+  await propertyCheck(
+    input: Gen.int(in: 0...10).map { shard in
+      _ = ClosureDecider.decideB(shard)
+      return shard
+    }
+  ) { shard in
+    #expect(ClosureDecider.decideA(shard) || helper(shard) || shard >= 0)
+  }
+}
+EOF
+cat > "$closure_fixture/apps/ios/MailApp/Backend/ClosureClient.swift" <<'EOF'
+// @archlint.module shell
+// @archlint.domain backend.closure
+import Foundation
+
+struct ClosureClient {
+  func handle() -> URLRequest {
+    let path = ClosureDecider.decideA(1) ? "/v1/accounts" : "/v1/accounts"
+    let url = URL(string: "http://localhost" + path)!
+    return URLRequest(url: url)
+  }
+}
+EOF
+assert_passes "$closure_fixture"
+
 arbitrary_core_type_reference_fixture="$(new_fixture arbitrary-core-type-reference)"
 cat > "$arbitrary_core_type_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
 // @archlint.module core

@@ -289,10 +289,14 @@ func goArchitectureFileFact(path string, loadedFile goLoadedFileContext) (archit
 	imports := goImports(syntaxFile)
 	identifiers := goIdentifiers(syntaxFile)
 	apiReferences := goAPIReferences(syntaxFile)
+	callableArgumentReferences := goSemanticCallableArgumentReferences(syntaxFile, loadedFile.typesInfo)
+	for reference := range callableArgumentReferences {
+		apiReferences[reference] = struct{}{}
+	}
 	decisionSurface := declaredDecisionSurface(syntaxFile)
 	decisionProducts := declaredDecisionProducts(syntaxFile)
 	decisionReferences := declaredDecisionReferences(syntaxFile)
-	propertyEvidence := goPropertyEvidence(syntaxFile)
+	propertyEvidence := goPropertyEvidence(syntaxFile, callableArgumentReferences)
 	if metadata.moduleType != "stateTest" {
 		for index := range propertyEvidence.checks {
 			propertyEvidence.checks[index].operationSequences = []goOperationSequenceEvidence{}
@@ -393,6 +397,36 @@ func goSemanticQualifiedReferences(syntaxFile *ast.File, info *types.Info, selfP
 			return true
 		}
 		references[ownerPkg.Name()+"."+object.Name()] = struct{}{}
+		return true
+	})
+	return references
+}
+
+// goSemanticCallableArgumentReferences records function symbols that are passed
+// as values to another call, e.g. quick.Check(makeProp(Decide), nil). They are
+// real API references even though they are not syntactic calls themselves.
+func goSemanticCallableArgumentReferences(syntaxFile *ast.File, info *types.Info) map[string]struct{} {
+	references := map[string]struct{}{}
+	if info == nil {
+		return references
+	}
+	ast.Inspect(syntaxFile, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, argument := range call.Args {
+			ast.Inspect(argument, func(argumentNode ast.Node) bool {
+				identifier, ok := argumentNode.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if _, ok := info.Uses[identifier].(*types.Func); ok {
+					references[identifier.Name] = struct{}{}
+				}
+				return true
+			})
+		}
 		return true
 	})
 	return references
@@ -816,7 +850,10 @@ type goOperationSequenceEvidence struct {
 	assertions map[string]struct{}
 }
 
-func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
+func goPropertyEvidence(
+	syntaxFile *ast.File,
+	callableArgumentReferences map[string]struct{},
+) goPropertyEvidenceResult {
 	globalFunctions := goFunctionDeclarationsByName(syntaxFile)
 	quickNames := goImportNamesByPath(syntaxFile)["testing/quick"]
 	result := goPropertyEvidenceResult{}
@@ -841,6 +878,43 @@ func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
 					references[reference] = struct{}{}
 				}
 			}
+			// Also harvest every identifier in the call-site argument
+			// expressions and expand it through the call graph. A property built
+			// by a higher-order helper — e.g. quick.Check(makeProp(decide), nil) —
+			// names `decide` only as a value passed at the call site (not a call),
+			// so it is invisible to call/type reference collection; capture it
+			// here and follow `makeProp`'s body through the property functions.
+			for _, argument := range call.Args {
+				ast.Inspect(argument, func(node ast.Node) bool {
+					name := ""
+					switch typed := node.(type) {
+					case *ast.Ident:
+						name = typed.Name
+					case *ast.SelectorExpr:
+						name = typed.Sel.Name
+					}
+					if name == "" {
+						return true
+					}
+					if goPredeclaredIdentifier(name) {
+						return true
+					}
+					_, isPropertyFunction := propertyFunctions[name]
+					_, isCallableArgument := callableArgumentReferences[name]
+					if !isPropertyFunction && !isCallableArgument {
+						return true
+					}
+					if isCallableArgument {
+						references[name] = struct{}{}
+					}
+					if referencedFunction, ok := propertyFunctions[name]; ok {
+						for nested := range goReachablePropertyReferences(&referencedFunction, propertyFunctions, map[string]bool{}) {
+							references[nested] = struct{}{}
+						}
+					}
+					return true
+				})
+			}
 			result.checks = append(result.checks, goPropertyCheckEvidence{
 				references:         references,
 				generatedInputs:    goGeneratedInputEvidenceForProperty(propertyFunction, propertyFunctions),
@@ -850,6 +924,19 @@ func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
 		})
 	}
 	return result
+}
+
+func goPredeclaredIdentifier(name string) bool {
+	switch name {
+	case "nil", "true", "false", "iota":
+		return true
+	case "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover":
+		return true
+	case "any", "bool", "byte", "comparable", "complex64", "complex128", "error", "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	default:
+		return false
+	}
 }
 
 func goPropertyCheckFacts(evidence goPropertyEvidenceResult) []propertyCheckFact {
@@ -966,9 +1053,48 @@ func goQuickCheckPropertyFunction(
 			return &propertyFunction
 		}
 		return nil
+	case *ast.CallExpr:
+		identifier, ok := firstArgument.Fun.(*ast.Ident)
+		if !ok {
+			return nil
+		}
+		propertyBuilder, ok := propertyFunctions[identifier.Name]
+		if !ok {
+			return nil
+		}
+		return goReturnedPropertyFunction(&propertyBuilder)
 	default:
 		return nil
 	}
+}
+
+func goReturnedPropertyFunction(propertyBuilder *goPropertyFunction) *goPropertyFunction {
+	if propertyBuilder == nil {
+		return nil
+	}
+	var returned *goPropertyFunction
+	ast.Inspect(propertyBuilder.body, func(node ast.Node) bool {
+		if returned != nil {
+			return false
+		}
+		returnStatement, ok := node.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		for _, result := range returnStatement.Results {
+			functionLiteral, ok := result.(*ast.FuncLit)
+			if !ok {
+				continue
+			}
+			returned = &goPropertyFunction{
+				functionType: functionLiteral.Type,
+				body:         functionLiteral.Body,
+			}
+			return false
+		}
+		return true
+	})
+	return returned
 }
 
 func goReachablePropertyReferences(

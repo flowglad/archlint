@@ -78,6 +78,54 @@ test("decision property", () => {
 });
 TS
 
+cat > "$TMPDIR/src/closure.ts" <<'TS'
+// @archlint.module core
+// @archlint.domain demo.closure
+
+export function decideA(value: number): boolean {
+  return value >= 0;
+}
+
+export function decideB(value: number): boolean {
+  return value < 0;
+}
+
+export function decideC(value: number): boolean {
+  return value === 0;
+}
+TS
+
+cat > "$TMPDIR/tests/closure.test.mts" <<'TS'
+// @archlint.module test
+// @archlint.domain demo.closure
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fc from "fast-check";
+import { decideA, decideB, decideC } from "../src/closure.js";
+
+const genB = fc.integer().map((value) => {
+  decideB(value);
+  return value;
+});
+
+function makeProp(decide: (value: number) => boolean) {
+  return (value: number) => {
+    decide(value);
+    return true;
+  };
+}
+
+test("closure properties", () => {
+  fc.assert(
+    fc.property(fc.integer(), (value) => {
+      assert.equal(typeof decideA(value), "boolean");
+    }),
+  );
+  fc.assert(fc.property(genB, makeProp(decideC)));
+});
+TS
+
 npm --prefix "$ROOT/typescript" install >/dev/null
 npm --prefix "$ROOT/typescript" run --silent typecheck
 uv run --project "$ROOT" python "$ROOT/evaluate.py" \
