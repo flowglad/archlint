@@ -453,7 +453,10 @@ let expression_contains_identifier name expression =
   iterator.expr iterator expression;
   !found
 
-let generated_input_uses facts body name =
+let generated_input_uses body name =
+  if expression_contains_identifier name body then [ name ] else []
+
+let generated_input_api_uses facts body name =
   let uses = ref StringSet.empty in
   let record expression =
     if expression_contains_identifier name expression then
@@ -482,7 +485,7 @@ let generated_inputs_for_property facts body =
   |> List.concat_map (fun pattern ->
          pattern_names pattern |> StringSet.elements
          |> List.filter is_bindable_name
-         |> List.map (fun name -> { name; uses = generated_input_uses facts body name }))
+         |> List.map (fun name -> { name; uses = generated_input_uses body name }))
 
 let operation_sequences_for_property facts body args generated_inputs =
   if
@@ -496,7 +499,10 @@ let operation_sequences_for_property facts body args generated_inputs =
     in
     generated_inputs
     |> List.filter (fun input -> input.uses <> [])
-    |> List.map (fun input -> { input = input.name; operations = input.uses; assertions })
+    |> List.filter_map (fun input ->
+           let operations = generated_input_api_uses facts body input.name in
+           if operations = [] then None
+           else Some { input = input.name; operations; assertions })
   else []
 
 let rec collect_structure_item facts item =

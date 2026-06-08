@@ -975,23 +975,9 @@ func goGeneratedInputUses(
 	propertyFunctions map[string]goPropertyFunction,
 ) map[string]struct{} {
 	uses := map[string]struct{}{}
-	ast.Inspect(root, func(node ast.Node) bool {
-		switch typedNode := node.(type) {
-		case *ast.CallExpr:
-			if goNodeContainsIdent(typedNode, name) {
-				for reference := range goExpandedReferences(goAPIReferencesFromNode(typedNode), propertyFunctions) {
-					uses[reference] = struct{}{}
-				}
-			}
-		case *ast.RangeStmt:
-			if goNodeContainsIdent(typedNode.X, name) {
-				for reference := range goExpandedReferences(goAPIReferencesFromNode(typedNode.Body), propertyFunctions) {
-					uses[reference] = struct{}{}
-				}
-			}
-		}
-		return true
-	})
+	if goNodeContainsIdent(root, name) {
+		uses[name] = struct{}{}
+	}
 	return uses
 }
 

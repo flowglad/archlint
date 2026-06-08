@@ -262,7 +262,7 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_generated_input_uses_must_be_reachable_api_references(self):
+    def test_generated_input_uses_are_syntactic_participation_not_api_references(self):
         source = source_file(
             path="/repo/CoreTests.swift",
             testScope="CoreTests",
@@ -278,10 +278,7 @@ class EvaluateTests(unittest.TestCase):
 
         violations = evaluate.evaluate([source])
 
-        self.assertIn(
-            "property generated input uses must be reachable API references: hiddenUse",
-            [violation.message for violation in violations],
-        )
+        self.assertEqual([], violations)
 
     def test_core_module_exhaustive_property_surface_is_structural(self):
         core = source_file(

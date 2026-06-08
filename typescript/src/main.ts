@@ -362,11 +362,6 @@ function collectNodeFacts(facts: Facts, sourceFile: ts.SourceFile): void {
         for (const reference of propertyCheck.references) {
           facts.apiReferences.add(reference);
         }
-        for (const input of propertyCheck.generatedInputs) {
-          for (const reference of input.uses) {
-            facts.apiReferences.add(reference);
-          }
-        }
         for (const sequence of propertyCheck.operationSequences) {
           for (const reference of [...sequence.operations, ...sequence.assertions]) {
             facts.apiReferences.add(reference);
@@ -406,13 +401,12 @@ function propertyCheckForCall(facts: Facts, call: ts.CallExpression): PropertyCh
     return undefined;
   }
   const references = sorted(expandedApiReferences(facts, apiReferencesInNode(callback), new Set()));
-  const generatedInputs = callback.parameters.map((parameter) => {
-    const name = parameter.name.getText();
-    return {
+  const generatedInputs = callback.parameters.flatMap((parameter) =>
+    bindingNames(parameter.name).map((name) => ({
       name,
-      uses: sorted(generatedInputUses(facts, callback, name)),
-    };
-  });
+      uses: sorted(generatedInputUses(callback.body ?? callback, name)),
+    })),
+  );
   const operationSequences = operationSequencesForProperty(facts, call, callback, generatedInputs);
   return { references, generatedInputs, operationSequences };
 }
@@ -440,7 +434,11 @@ function operationSequencesForProperty(
     if (generator === undefined || !containsOperationSequenceGenerator(generator) || input.uses.length === 0 || assertions.length === 0) {
       return [];
     }
-    return [{ input: input.name, operations: input.uses, assertions }];
+    const operations = sorted(generatedInputApiUses(facts, callback.body ?? callback, input.name));
+    if (operations.length === 0) {
+      return [];
+    }
+    return [{ input: input.name, operations, assertions }];
   });
 }
 
@@ -458,7 +456,11 @@ function containsOperationSequenceGenerator(node: ts.Node): boolean {
   return found;
 }
 
-function generatedInputUses(facts: Facts, body: ts.Node, name: string): Set<string> {
+function generatedInputUses(body: ts.Node, name: string): Set<string> {
+  return nodeContainsIdentifier(body, name) ? new Set([name]) : new Set();
+}
+
+function generatedInputApiUses(facts: Facts, body: ts.Node, name: string): Set<string> {
   const uses = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && nodeContainsIdentifier(node, name)) {

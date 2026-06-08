@@ -101,10 +101,10 @@ state = [checks for path, checks in checks_by_file.items() if path.endswith("tes
 assert ordinary and ordinary[0]["operationSequences"] == [], ordinary
 assert ordinary[0]["generatedInputs"], ordinary
 assert ordinary[0]["generatedInputs"][0]["name"] == "xs", ordinary
-assert "decide" in ordinary[0]["generatedInputs"][0]["uses"], ordinary
+assert "xs" in ordinary[0]["generatedInputs"][0]["uses"], ordinary
 assert state and state[0]["operationSequences"], state
 assert "decide" in state[0]["references"], state
-assert "decide" in state[0]["generatedInputs"][0]["uses"], state
+assert "xs" in state[0]["generatedInputs"][0]["uses"], state
 assert state[0]["operationSequences"][0]["input"] == "xs", state
 assert "decide" in state[0]["operationSequences"][0]["operations"], state
 assert "decide" in state[0]["operationSequences"][0]["assertions"], state

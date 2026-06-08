@@ -20,14 +20,14 @@ Whenever an adapter uses known-good identifier detection, it must also implement
 This applies broadly, including:
 
 - property-test detection and property `references`
-- property generated-input `uses`
+- property generated-input `uses` when the use is derived from trusted helper APIs rather than direct syntax
 - property operation sequence detection
 - test-scope inference from test-library APIs
 - effect or state boundary evidence derived from known dependency APIs
 
 The intent is to reject forgery by incidental names while accepting normal local factoring. A test file should not fail just because it wraps `QCheck`, `Crowbar`, `testing/quick`, or a Swift property-check helper in a local helper. Conversely, a file should not pass merely because it contains a local variable or unrelated declaration with a trusted-looking name.
 
-For generated property tests, adapters should emit structurally rich generated-input evidence rather than policy booleans. Report the generated inputs and the reachable API uses where each generated value flows; the evaluator decides whether those uses satisfy property coverage or operation sequence obligations. Constant properties such as unit generators with `fun ()` or ignored closure arguments may be useful regression assertions, but they should not be emitted as generated-input-backed coverage.
+For generated property tests, adapters should emit structurally rich generated-input evidence rather than policy booleans. Report the generated inputs and syntactic uses where each generated value participates in the property body. These uses are anti-vacuity evidence only; they do not need to prove value flow to an assertion or decision API. Constant properties such as unit generators with `fun ()` or ignored closure arguments may be useful regression assertions, but they should not be emitted as generated-input-backed coverage.
 
 ## Validation
 

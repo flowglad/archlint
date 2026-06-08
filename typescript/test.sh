@@ -79,7 +79,7 @@ assert test_file["propertyChecks"], test_file
 check = test_file["propertyChecks"][0]
 assert "decide" in check["references"], check
 assert "wrappedDecide" in check["references"], check
-assert check["generatedInputs"] == [{"name": "value", "uses": ["assert", "checkDecision", "decide", "equal", "wrappedDecide"]}], check
+assert check["generatedInputs"] == [{"name": "value", "uses": ["value"]}], check
 handler = [item for item in document["files"] if item["path"].endswith("handler.ts")][0]
 assert "commander" in handler["effectfulImports"], handler
 assert "Command" in handler["effectfulIdentifiers"], handler

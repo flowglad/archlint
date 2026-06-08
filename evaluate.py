@@ -428,21 +428,6 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
                     + ", ".join(references_outside_property),
                 )
             )
-        generated_input_uses = set().union(
-            *(generated_input.uses for check in source_file.property_checks for generated_input in check.generated_inputs),
-            set(),
-        )
-        generated_input_uses_outside_api_references = sorted(
-            generated_input_uses - source_file.api_references
-        )
-        if generated_input_uses_outside_api_references:
-            violations.append(
-                Violation(
-                    source_file.path,
-                    "property generated input uses must be reachable API references: "
-                    + ", ".join(generated_input_uses_outside_api_references),
-                )
-            )
         generated_input_names = {
             generated_input.name
             for check in source_file.property_checks
