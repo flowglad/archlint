@@ -120,5 +120,12 @@ runs:
             exit 1
             ;;
         esac
+        # The ocaml adapter shells out to `dune`, which lives in the opam
+        # switch's bin. Composite-action steps are separate shells and
+        # setup-ocaml's environment is not reliably active here, so load it
+        # explicitly before evaluate.py spawns dune.
+        if [ "$ADAPTER" = "ocaml" ]; then
+          eval "$(opam env)"
+        fi
         uv run --project "$GITHUB_ACTION_PATH" \
           python "$GITHUB_ACTION_PATH/evaluate.py" "${args[@]}"
