@@ -22,6 +22,7 @@ struct SwiftFileInfo {
   let imports: Set<String>
   let identifiers: Set<String>
   let apiReferences: Set<String>
+  let qualifiedReferences: Set<String>
   let decisionReferences: Set<String>
   let decisionSurface: Set<String>
   let propertyTestSurface: Set<String>
@@ -118,6 +119,8 @@ struct SourceFact: Encodable {
   let propertyTestSurface: [String]
   let decisionProducts: [String]
   let decisionReferences: [String]
+  let moduleName: String
+  let qualifiedReferences: [String]
   let effectfulImports: [String]
   let effectfulIdentifiers: [String]
   let sharedState: [SharedStateFact]
@@ -299,6 +302,7 @@ enum SwiftArchLint {
       imports: Set(visitor.importedModules),
       identifiers: Set(visitor.identifiers),
       apiReferences: Set(visitor.apiReferences),
+      qualifiedReferences: Set(visitor.qualifiedReferences),
       decisionReferences: Set(visitor.decisionReferences),
       decisionSurface: Set(visitor.decisionSurface),
       propertyTestSurface: Set(visitor.propertyTestSurface),
@@ -393,6 +397,8 @@ enum SwiftArchLint {
       propertyTestSurface: fileInfo.propertyTestSurface.sorted(),
       decisionProducts: fileInfo.decisionProducts.sorted(),
       decisionReferences: fileInfo.decisionReferences.sorted(),
+      moduleName: fileInfo.url.deletingPathExtension().lastPathComponent,
+      qualifiedReferences: fileInfo.qualifiedReferences.sorted(),
       effectfulImports: fileInfo.imports.intersection(effectfulModules).sorted(),
       effectfulIdentifiers: fileInfo.identifiers.intersection(effectfulTypes).sorted(),
       sharedState: fileInfo.sharedState,
@@ -423,6 +429,7 @@ final class ArchitectureVisitor: SyntaxVisitor {
   private(set) var importedModules: [String] = []
   private(set) var identifiers: [String] = []
   private(set) var apiReferences: [String] = []
+  private(set) var qualifiedReferences: [String] = []
   private(set) var decisionReferences: [String] = []
   private(set) var decisionSurface: [String] = []
   private(set) var propertyTestSurface: [String] = []
@@ -463,6 +470,11 @@ final class ArchitectureVisitor: SyntaxVisitor {
     if let baseReference: DeclReferenceExprSyntax = node.base?.as(DeclReferenceExprSyntax.self) {
       recordAPIReference(baseReference.baseName.text)
       recordAPIReference(node.declName.baseName.text)
+      // A type-qualified member access (e.g. HTTPClient.send) is recorded in
+      // Base.member form so the dependency-direction rule matches a genuine
+      // cross-type reach. Bare references within the single Swift module cannot
+      // be attributed and are intentionally not recorded here.
+      qualifiedReferences.append("\(baseReference.baseName.text).\(node.declName.baseName.text)")
     }
     if node.declName.baseName.text == "standard",
       let baseReference: DeclReferenceExprSyntax = node.base?.as(DeclReferenceExprSyntax.self),

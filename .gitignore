@@ -12,3 +12,6 @@ swift/.build/
 
 # TypeScript adapter dependencies
 typescript/node_modules/
+
+# Go adapter: `go build ./...` from go/ emits a binary named after the dir
+go/go

@@ -28,6 +28,8 @@ def source_file(**overrides):
         "propertyTestSurface": ["decideSync"],
         "decisionProducts": [],
         "decisionReferences": ["decideSync"],
+        "moduleName": "Core",
+        "qualifiedReferences": [],
         "effectfulImports": [],
         "effectfulIdentifiers": [],
         "sharedState": [],
@@ -470,18 +472,20 @@ class EvaluateTests(unittest.TestCase):
         core = source_file(
             path="/repo/Core.swift",
             metadata={"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
-            apiReferences=["HTTPClient"],
+            moduleName="Core",
+            qualifiedReferences=["HTTPClient.send"],
         )
         shell = source_file(
             path="/repo/HTTPClient.swift",
             metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
-            decisionReferences=["HTTPClient"],
+            moduleName="HTTPClient",
+            decisionReferences=["send"],
         )
 
         violations = evaluate.evaluate([core, shell])
 
         self.assertIn(
-            "core module must not reference implementation APIs: HTTPClient",
+            "core module must not reference implementation APIs: HTTPClient.send",
             [violation.message for violation in violations],
         )
 
@@ -489,63 +493,78 @@ class EvaluateTests(unittest.TestCase):
         value = source_file(
             path="/repo/Value.swift",
             metadata={"moduleType": "value", "domain": "mail.sync", "exemptReason": ""},
-            apiReferences=["SQLiteStore"],
+            moduleName="Value",
+            qualifiedReferences=["SQLiteStore.save"],
         )
         state = source_file(
             path="/repo/SQLiteStore.swift",
             metadata={"moduleType": "state", "domain": "mail.sync", "exemptReason": ""},
-            decisionReferences=["SQLiteStore"],
+            moduleName="SQLiteStore",
+            decisionReferences=["save"],
         )
 
         violations = evaluate.evaluate([value, state])
 
         self.assertIn(
-            "value module must not reference implementation APIs: SQLiteStore",
+            "value module must not reference implementation APIs: SQLiteStore.save",
             [violation.message for violation in violations],
         )
 
-    def test_dependency_direction_uses_api_references_not_broad_identifiers(self):
+    def test_dependency_direction_uses_qualified_references_not_bare_identifiers(self):
+        # A core that shares a bare identifier with a same-domain shell surface
+        # (here a `t` type and the `send` name used unqualified) is not flagged:
+        # only a qualified cross-module reach counts. This is the false-positive
+        # class that motivated qualified matching.
         core = source_file(
             path="/repo/Core.swift",
             metadata={"moduleType": "core", "domain": "mail.sync", "exemptReason": ""},
-            identifiers=["HTTPClient"],
-            apiReferences=[],
+            identifiers=["t", "send"],
+            apiReferences=["t", "send"],
+            qualifiedReferences=[],
         )
         shell = source_file(
             path="/repo/HTTPClient.swift",
             metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
-            decisionReferences=["HTTPClient"],
+            moduleName="HTTPClient",
+            decisionReferences=["t", "send"],
         )
 
         violations = evaluate.evaluate([core, shell])
 
-        self.assertNotIn(
-            "core module must not reference implementation APIs: HTTPClient",
-            [violation.message for violation in violations],
+        self.assertEqual(
+            [],
+            [
+                violation.message
+                for violation in violations
+                if "must not reference implementation APIs" in violation.message
+            ],
         )
 
     def test_dependency_direction_is_domain_scoped(self):
         core = source_file(
             path="/repo/auth/Core.go",
             metadata={"moduleType": "core", "domain": "auth.installation", "exemptReason": ""},
-            apiReferences=["Principal"],
+            moduleName="Core",
+            qualifiedReferences=["Context.Principal"],
         )
         exempt = source_file(
             path="/repo/principal/Context.go",
             metadata={"moduleType": "exempt", "domain": "", "exemptReason": "pure-glue"},
+            moduleName="Context",
             decisionReferences=["Principal"],
         )
 
         violations = evaluate.evaluate([core, exempt])
 
         self.assertNotIn(
-            "core module must not reference implementation APIs: Principal",
+            "core module must not reference implementation APIs: Context.Principal",
             [violation.message for violation in violations],
         )
 
         same_domain_implementation = source_file(
             path="/repo/auth/Context.go",
             metadata={"moduleType": "shell", "domain": "auth.installation", "exemptReason": ""},
+            moduleName="Context",
             decisionReferences=["Principal"],
             effectfulIdentifiers=["EffectType"],
             identifiers=["Principal", "EffectType"],
@@ -554,7 +573,7 @@ class EvaluateTests(unittest.TestCase):
         violations = evaluate.evaluate([core, same_domain_implementation])
 
         self.assertIn(
-            "core module must not reference implementation APIs: Principal",
+            "core module must not reference implementation APIs: Context.Principal",
             [violation.message for violation in violations],
         )
 
@@ -1363,6 +1382,8 @@ class EvaluateTests(unittest.TestCase):
                     "propertyTestSurface": ["DecideSync"],
                     "decisionProducts": [],
                     "decisionReferences": ["DecideSync"],
+                    "moduleName": "Decision",
+                    "qualifiedReferences": [],
                     "effectfulImports": [],
                     "effectfulIdentifiers": [],
                     "sharedState": [],
@@ -1502,6 +1523,8 @@ def valid_fact_document():
                 "propertyTestSurface": ["decideSync"],
                 "decisionProducts": [],
                 "decisionReferences": ["decideSync"],
+                "moduleName": "Core",
+                "qualifiedReferences": [],
                 "effectfulImports": [],
                 "effectfulIdentifiers": [],
                 "sharedState": [],

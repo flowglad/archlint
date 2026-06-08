@@ -107,6 +107,8 @@ class SourceFile:
     property_test_surface: set[str]
     decision_products: set[str]
     decision_references: set[str]
+    module_name: str
+    qualified_references: set[str]
     effectful_imports: set[str]
     effectful_identifiers: set[str]
     has_effectful_imports: bool
@@ -352,6 +354,8 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         property_test_surface=set(item["propertyTestSurface"]),
         decision_products=set(item["decisionProducts"]),
         decision_references=set(item["decisionReferences"]),
+        module_name=item["moduleName"],
+        qualified_references=set(item["qualifiedReferences"]),
         effectful_imports=set(item["effectfulImports"]),
         effectful_identifiers=set(item["effectfulIdentifiers"]),
         has_effectful_imports=bool(item["effectfulImports"]),
@@ -640,19 +644,27 @@ def evaluate_effect_boundaries(files: list[SourceFile]) -> list[Violation]:
 
 
 def evaluate_dependency_direction(files: list[SourceFile]) -> list[Violation]:
-    implementation_references_by_domain: dict[str, set[str]] = {}
+    # The implementation surface declared by shell/state/exempt modules,
+    # qualified by the declaring module's name (e.g. "Backend_registry.run").
+    # Matching is on fully-qualified names rather than bare identifiers so that
+    # a core/value module is only flagged for a genuine cross-module reach, not
+    # for an incidental shared name like a `t` type or a `()` literal. A
+    # reference used bare after `open`/`import` is not attributed to a foreign
+    # module and so is not flagged — the correct conservative behaviour for a
+    # prohibition. See the qualifiedReferences contract.
+    implementation_surface_by_domain: dict[str, set[str]] = {}
     for source_file in files:
-        if source_file.metadata.module_type in {"shell", "state", "exempt"}:
-            implementation_references_by_domain.setdefault(source_file.metadata.domain, set()).update(
-                source_file.decision_references
+        if source_file.metadata.module_type in {"shell", "state", "exempt"} and source_file.module_name:
+            implementation_surface_by_domain.setdefault(source_file.metadata.domain, set()).update(
+                f"{source_file.module_name}.{reference}" for reference in source_file.decision_references
             )
 
     violations: list[Violation] = []
     for source_file in files:
         if source_file.metadata.module_type not in {"core", "value"}:
             continue
-        forbidden_references = implementation_references_by_domain.get(source_file.metadata.domain, set())
-        referenced_implementation = sorted(source_file.api_references.intersection(forbidden_references))
+        forbidden_surface = implementation_surface_by_domain.get(source_file.metadata.domain, set())
+        referenced_implementation = sorted(source_file.qualified_references.intersection(forbidden_surface))
         if referenced_implementation:
             violations.append(
                 Violation(

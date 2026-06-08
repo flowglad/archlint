@@ -90,6 +90,23 @@ struct AddAccountRequest: Equatable {
 EOF
 assert_passes "$passing_fixture"
 
+# The shell references the core via a type-qualified member access
+# (HTTPMailBackendDecider.decidePath), which the adapter records in Base.member
+# form; moduleName is the file's own type. This is the data the
+# dependency-direction rule matches on (qualified, not bare).
+run_adapter "$passing_fixture" > "$tmp_root/passing-facts.json"
+assert_facts "$tmp_root/passing-facts.json" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+shell = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendClient.swift")][0]
+assert shell["moduleName"] == "HTTPMailBackendClient", shell
+assert "HTTPMailBackendDecider.decidePath" in shell["qualifiedReferences"], shell
+core = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendDecider.swift")][0]
+assert core["moduleName"] == "HTTPMailBackendDecider", core
+PY
+
 missing_core_reference_fixture="$(new_fixture missing-core-reference)"
 cat > "$missing_core_reference_fixture/apps/ios/MailApp/Backend/HTTPMailBackendDecider.swift" <<'EOF'
 // @archlint.module core

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -185,6 +186,44 @@ func Route() string {
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
 		"shell module must reference a core API in the same @archlint.domain",
 	})
+}
+
+func TestGoModuleNameAndQualifiedReferences(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decision.go")
+	source := `// @archlint.module core
+// @archlint.domain routing
+package routing
+
+import "example.com/app/transport"
+
+type t struct{}
+
+func Decide() string {
+	// transport.Send is a genuine cross-package reach (qualified); send used
+	// bare and the local type t must not surface as qualified references.
+	send := transport.Send()
+	return send
+}
+`
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fact, violations := goArchitectureFileFact(path)
+	if len(violations) != 0 {
+		t.Fatalf("unexpected violations: %v", violations)
+	}
+	if fact.ModuleName != "routing" {
+		t.Fatalf("ModuleName = %q, want %q", fact.ModuleName, "routing")
+	}
+	if !slices.Contains(fact.QualifiedReferences, "transport.Send") {
+		t.Fatalf("QualifiedReferences = %v, want to contain %q", fact.QualifiedReferences, "transport.Send")
+	}
+	for _, unwanted := range []string{"t", "send", "Send"} {
+		if slices.Contains(fact.QualifiedReferences, unwanted) {
+			t.Fatalf("QualifiedReferences = %v, should not contain bare %q", fact.QualifiedReferences, unwanted)
+		}
+	}
 }
 
 func TestLintBackendArchitectureRejectsHandlerWithOnlyArbitraryCoreTypeReference(t *testing.T) {
