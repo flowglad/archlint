@@ -14,6 +14,15 @@ cat > "$TMPDIR/src/decision.ts" <<'TS'
 export function decide(x: number): string {
   return x >= 0 ? "positive" : "negative";
 }
+
+export const decisionNode = (value: number): { kind: "node"; value: number } => ({
+  kind: "node",
+  value,
+});
+
+export function wrappedDecide(x: number): string {
+  return decide(x);
+}
 TS
 
 cat > "$TMPDIR/src/handler.ts" <<'TS'
@@ -36,10 +45,10 @@ cat > "$TMPDIR/tests/decision.test.mts" <<'TS'
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fc from "fast-check";
-import { decide } from "../src/decision.js";
+import { wrappedDecide } from "../src/decision.js";
 
 function checkDecision(value: number): string {
-  return decide(value);
+  return wrappedDecide(value);
 }
 
 test("decision property", () => {
@@ -69,10 +78,15 @@ assert test_file["testScope"] == "decision.test", test_file
 assert test_file["propertyChecks"], test_file
 check = test_file["propertyChecks"][0]
 assert "decide" in check["references"], check
-assert check["generatedInputs"] == [{"name": "value", "uses": ["assert", "checkDecision", "decide", "equal"]}], check
+assert "wrappedDecide" in check["references"], check
+assert check["generatedInputs"] == [{"name": "value", "uses": ["assert", "checkDecision", "decide", "equal", "wrappedDecide"]}], check
 handler = [item for item in document["files"] if item["path"].endswith("handler.ts")][0]
 assert "commander" in handler["effectfulImports"], handler
 assert "Command" in handler["effectfulIdentifiers"], handler
+core = [item for item in document["files"] if item["path"].endswith("decision.ts")][0]
+assert "decisionNode" in core["decisionSurface"], core
+assert "decisionNode" not in core["propertyTestSurface"], core
+assert "decide" in core["propertyTestSurface"], core
 PY
 
 cat > "$TMPDIR/src/constant-only.ts" <<'TS'

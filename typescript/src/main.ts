@@ -71,6 +71,13 @@ type Facts = {
   interfaceLogicEvidence: InterfaceLogicEvidence;
 };
 
+type ParsedFile = {
+  filePath: string;
+  source: string;
+  sourceFile: ts.SourceFile;
+  facts: Facts;
+};
+
 const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts"]);
 const ignoredDirectories = new Set(["node_modules", "dist", "build", "coverage", ".git"]);
 
@@ -115,7 +122,9 @@ function main(): void {
   const repoRoot = path.resolve(args.get("--repo-root") ?? ".");
   const root = path.resolve(repoRoot, args.get("--typescript-root") ?? ".");
   const files = sourceFiles(root);
-  const facts = files.map((file) => sourceFact(file, readFileSync(file, "utf8")));
+  const parsedFiles = files.map(parseSourceFacts);
+  const globalFunctionReferences = uniqueGlobalFunctionReferences(parsedFiles);
+  const facts = parsedFiles.map((file) => sourceFact(file, globalFunctionReferences));
   process.stdout.write(`${JSON.stringify({ files: facts })}\n`);
 }
 
@@ -155,12 +164,28 @@ function sourceFiles(root: string): string[] {
   return files.sort();
 }
 
-function sourceFact(filePath: string, source: string): SourceFact {
+function parseSourceFacts(filePath: string): ParsedFile {
+  const source = readFileSync(filePath, "utf8");
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
   const facts = emptyFacts();
   collectTopLevel(facts, sourceFile);
+  return { filePath, source, sourceFile, facts };
+}
+
+function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<string>>): SourceFact {
+  const { filePath, source, sourceFile, facts } = file;
+  for (const [name, references] of globalFunctionReferences) {
+    if (!facts.functionReferences.has(name)) {
+      facts.functionReferences.set(name, references);
+    }
+  }
   collectNodeFacts(facts, sourceFile);
   const metadata = parseMetadata(source);
+  if (metadata.moduleType !== "stateTest") {
+    for (const check of facts.propertyChecks) {
+      check.operationSequences = [];
+    }
+  }
   return {
     path: filePath,
     testScope: inferTestScope(filePath, facts),
@@ -178,6 +203,24 @@ function sourceFact(filePath: string, source: string): SourceFact {
     propertyChecks: facts.propertyChecks,
     interfaceLogicEvidence: facts.interfaceLogicEvidence,
   };
+}
+
+function uniqueGlobalFunctionReferences(files: ParsedFile[]): Map<string, Set<string>> {
+  const referencesByName = new Map<string, Set<string>[]>();
+  for (const file of files) {
+    for (const [name, references] of file.facts.functionReferences) {
+      const existing = referencesByName.get(name) ?? [];
+      existing.push(references);
+      referencesByName.set(name, existing);
+    }
+  }
+  const unique = new Map<string, Set<string>>();
+  for (const [name, references] of referencesByName) {
+    if (references.length === 1 && references[0] !== undefined) {
+      unique.set(name, references[0]);
+    }
+  }
+  return unique;
 }
 
 function emptyFacts(): Facts {
@@ -257,7 +300,9 @@ function recordFunctionDeclaration(facts: Facts, declaration: ts.FunctionDeclara
   recordNamedDeclaration(facts, name, isExported(declaration));
   if (isExported(declaration)) {
     facts.decisionSurface.add(name);
-    facts.propertyTestSurface.add(name);
+    if (!isInertConstructorFunction(declaration)) {
+      facts.propertyTestSurface.add(name);
+    }
   }
   if (declaration.body !== undefined) {
     addUnique(facts.interfaceLogicEvidence.functionBodies, name);
@@ -282,7 +327,9 @@ function recordVariableStatement(facts: Facts, statement: ts.VariableStatement, 
       if (declaration.initializer !== undefined && isFunctionLikeExpression(declaration.initializer)) {
         if (exported) {
           facts.decisionSurface.add(name);
-          facts.propertyTestSurface.add(name);
+          if (!isInertConstructorFunction(declaration.initializer)) {
+            facts.propertyTestSurface.add(name);
+          }
         }
         addUnique(facts.interfaceLogicEvidence.functionBodies, name);
         facts.functionReferences.set(name, apiReferencesInNode(declaration.initializer));
@@ -312,6 +359,19 @@ function collectNodeFacts(facts: Facts, sourceFile: ts.SourceFile): void {
       recordCallableReference(facts.apiReferences, node.expression);
       const propertyCheck = propertyCheckForCall(facts, node);
       if (propertyCheck !== undefined) {
+        for (const reference of propertyCheck.references) {
+          facts.apiReferences.add(reference);
+        }
+        for (const input of propertyCheck.generatedInputs) {
+          for (const reference of input.uses) {
+            facts.apiReferences.add(reference);
+          }
+        }
+        for (const sequence of propertyCheck.operationSequences) {
+          for (const reference of [...sequence.operations, ...sequence.assertions]) {
+            facts.apiReferences.add(reference);
+          }
+        }
         facts.propertyChecks.push(propertyCheck);
       }
     }
@@ -593,6 +653,43 @@ function isExported(node: ts.Node): boolean {
 
 function isFunctionLikeExpression(node: ts.Node): node is ts.ArrowFunction | ts.FunctionExpression {
   return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+}
+
+function isInertConstructorFunction(node: ts.FunctionLikeDeclaration): boolean {
+  const body = node.body;
+  if (body === undefined) {
+    return false;
+  }
+  if (ts.isExpression(body)) {
+    return isInertConstructorExpression(body);
+  }
+  if (body.statements.length !== 1) {
+    return false;
+  }
+  const [statement] = body.statements;
+  return statement !== undefined
+    && ts.isReturnStatement(statement)
+    && statement.expression !== undefined
+    && isInertConstructorExpression(statement.expression);
+}
+
+function isInertConstructorExpression(node: ts.Expression): boolean {
+  if (
+    ts.isObjectLiteralExpression(node)
+    || ts.isArrayLiteralExpression(node)
+    || ts.isStringLiteralLike(node)
+    || ts.isNumericLiteral(node)
+    || ts.isIdentifier(node)
+    || node.kind === ts.SyntaxKind.TrueKeyword
+    || node.kind === ts.SyntaxKind.FalseKeyword
+    || node.kind === ts.SyntaxKind.NullKeyword
+  ) {
+    return true;
+  }
+  if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+    return isInertConstructorExpression(node.expression);
+  }
+  return false;
 }
 
 function isLiteralLike(node: ts.Expression): boolean {
