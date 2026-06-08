@@ -220,7 +220,7 @@ function compilerConfigFromTsconfig(configPath: string): ts.ParsedCommandLine {
   if (config.error !== undefined) {
     throw new Error(formatDiagnostics([config.error]));
   }
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath));
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath), undefined, configPath);
   if (parsed.errors.length > 0) {
     throw new Error(formatDiagnostics(parsed.errors));
   }

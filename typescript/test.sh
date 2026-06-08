@@ -126,6 +126,33 @@ test("closure properties", () => {
 });
 TS
 
+mkdir -p "$TMPDIR/node_modules/@types/local-env"
+cat > "$TMPDIR/node_modules/@types/local-env/index.d.ts" <<'TS'
+declare const LOCAL_ENV_FLAG: boolean;
+TS
+
+cat > "$TMPDIR/node_modules/@types/local-env/package.json" <<'JSON'
+{
+  "name": "@types/local-env",
+  "version": "1.0.0",
+  "types": "index.d.ts"
+}
+JSON
+
+cat > "$TMPDIR/tsconfig.json" <<'JSON'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["local-env"]
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}
+JSON
+
 npm --prefix "$ROOT/typescript" install >/dev/null
 npm --prefix "$ROOT/typescript" run --silent typecheck
 uv run --project "$ROOT" python "$ROOT/evaluate.py" \
