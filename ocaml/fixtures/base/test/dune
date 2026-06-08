@@ -1,0 +1,5 @@
+(library
+ (name fixture_tests)
+ (wrapped false)
+ (modules :standard)
+ (libraries fixture_lib fixture_pp))

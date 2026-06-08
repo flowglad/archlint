@@ -1,0 +1,8 @@
+(library
+ (name fixture_pp)
+ (wrapped false)
+ (modules :standard)
+ (libraries fixture_lib)
+ (preprocess
+  (action
+   (run cat %{input-file}))))

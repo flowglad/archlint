@@ -29,6 +29,21 @@ assert_facts() {
   uv run --project "$ARCHLINT_ROOT" python - "$1"
 }
 
+# copy_fixture SOURCE_DIR DEST_DIR
+#
+# Copies a checked-in fixture tree into a temporary test directory. Existing
+# files in DEST_DIR may be overwritten by overlay fixtures.
+copy_fixture() {
+  source_dir="$1"
+  dest_dir="$2"
+  if [ ! -d "$source_dir" ]; then
+    printf '%s\n' "missing fixture: $source_dir" >&2
+    exit 1
+  fi
+  mkdir -p "$dest_dir"
+  cp -R "$source_dir/." "$dest_dir"
+}
+
 # expect_violation EXPECTED_SUBSTRING COMMAND [ARGS...]
 #
 # Runs COMMAND expecting it to FAIL (non-zero) and to print EXPECTED_SUBSTRING

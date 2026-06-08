@@ -1,0 +1,5 @@
+; covers the (test ...) stanza form
+(test
+ (name plain_exit_test)
+ (modules plain_exit_test)
+ (libraries fixture_lib))

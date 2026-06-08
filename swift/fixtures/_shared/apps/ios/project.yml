@@ -1,0 +1,11 @@
+targets:
+  MailApp:
+    type: application
+    sources:
+      - MailApp
+  MailAppTests:
+    type: bundle.unit-test
+    sources:
+      - MailAppTests
+    dependencies:
+      - target: MailApp
