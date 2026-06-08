@@ -1,9 +1,14 @@
 name: CI
 
+# Run on every branch push so changes are tested before a PR exists. We do not
+# also trigger on pull_request: that would run CI twice on the same commit once
+# a PR is open. PRs still show these checks (they attach to the head commit's
+# SHA). Trade-off: PRs from forks won't run here, since forks can't push to this
+# repo; add a `pull_request` trigger with a fork guard if external contributions
+# ever land.
 on:
   push:
-    branches: [master]
-  pull_request:
+    branches: ['**']
 
 # One job per language: the five suites are independent, so they run in
 # parallel and cache their toolchains separately. Every adapter job also needs
