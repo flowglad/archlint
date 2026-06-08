@@ -58,18 +58,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Provides opam + a 5.4 compiler and caches the opam root. We do not let
-      # setup-ocaml pin/install our package; the self-contained local switch
-      # (ocaml/_opam) is created by `just setup-ocaml`, matching local dev.
+      # setup-ocaml builds the compiler once and caches the opam root across
+      # runs. We install the adapter's deps into that switch and point
+      # ARCHLINT_OPAM_SWITCH at it, so `just test-ocaml` reuses this switch
+      # rather than compiling a second one (locally it defaults to ocaml/_opam).
       - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: "5.4"
-          opam-pin: false
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
       - uses: extractions/setup-just@v2
-      - run: just setup-ocaml
+      - run: opam install ./ocaml --deps-only --yes
+      - run: echo "ARCHLINT_OPAM_SWITCH=$(opam switch show)" >> "$GITHUB_ENV"
       - run: just test-ocaml
 
   swift:

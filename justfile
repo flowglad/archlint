@@ -33,11 +33,12 @@ setup: setup-ocaml
 setup-ocaml:
     #!/bin/sh
     set -eu
-    if [ -d "{{justfile_directory()}}/ocaml/_opam" ]; then
-      echo "ocaml/_opam already present; skipping switch creation"
+    sw="${ARCHLINT_OPAM_SWITCH}"
+    if opam switch list --short 2>/dev/null | grep -Fxq "$sw"; then
+      echo "opam switch already present: $sw (skipping creation)"
     else
-      echo "creating self-contained OCaml switch in ocaml/_opam"
-      opam switch create "{{justfile_directory()}}/ocaml" "{{ocaml_compiler}}" --deps-only --yes
+      echo "creating OCaml switch: $sw"
+      opam switch create "$sw" "{{ocaml_compiler}}" --deps-only --yes
     fi
 
 # Run every suite in parallel and print an aggregated PASS/FAIL summary.
