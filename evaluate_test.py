@@ -1325,12 +1325,13 @@ class EvaluateTests(unittest.TestCase):
             propertyChecks=[property_check(["DecideSync"])],
         )
 
-        def fake_run_adapter(repo_root, adapter, go_module, go_packages, swift_xcodegen, ocaml_root):
+        def fake_run_adapter(repo_root, adapter, go_module, go_packages, swift_xcodegen, ocaml_root, typescript_root=None):
             self.assertEqual(Path("/repo"), repo_root)
             self.assertEqual("backend-module", go_module)
             self.assertEqual("./domain/...", go_packages)
             self.assertEqual("client/project.yml", swift_xcodegen)
             self.assertEqual("src", ocaml_root)
+            self.assertIsNone(typescript_root)
             return {"go": [go_core], "swift": [swift_test]}[adapter]
 
         with mock.patch.object(evaluate, "run_adapter", side_effect=fake_run_adapter):
@@ -1415,6 +1416,28 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("--root", command)
         self.assertIn("./main.exe", command)
         self.assertEqual("lib", command[command.index("--ocaml-root") + 1])
+
+    def test_run_typescript_adapter_constructs_npm_command(self):
+        payload = valid_fact_document()
+        payload["files"][0]["path"] = "/repo/tools/ts2pant/src/decision.ts"
+        completed = subprocess_result(stdout=evaluate.json.dumps(payload), returncode=0)
+
+        with mock.patch.object(evaluate.subprocess, "run", return_value=completed) as run:
+            files = evaluate.run_adapter(
+                Path("/repo"),
+                "typescript",
+                go_module=None,
+                go_packages=None,
+                swift_xcodegen=None,
+                ocaml_root=None,
+                typescript_root="tools/ts2pant",
+            )
+
+        self.assertEqual("/repo/tools/ts2pant/src/decision.ts", files[0].path)
+        command = run.call_args.args[0]
+        self.assertEqual("npm", command[0])
+        self.assertIn("archlint", command)
+        self.assertEqual("tools/ts2pant", command[command.index("--typescript-root") + 1])
 
     def test_run_adapter_reports_adapter_failure_output(self):
         completed = subprocess_result(stdout="partial output\n", stderr="adapter error\n", returncode=2)

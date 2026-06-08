@@ -7,7 +7,7 @@ Guidance for AI coding agents working in this repository.
 Archlint has one shared evaluator and language-specific fact adapters:
 
 - `evaluate.py` owns shared policy over the fact schema.
-- `go/`, `ocaml/`, and `swift/` parse source code and emit facts.
+- `go/`, `ocaml/`, `swift/`, and `typescript/` parse source code and emit facts.
 
 Do not put cross-language policy in an adapter when it can be expressed over the shared fact schema. Adapters should emit structural facts; the evaluator should decide whether those facts satisfy architecture policy.
 
@@ -38,6 +38,7 @@ uv run --project . python evaluate_test.py
 sh ocaml/test.sh
 cd go && go test .
 sh swift/test.sh
+sh typescript/test.sh
 ```
 
 If a full adapter suite fails because of an existing unrelated policy drift, report that explicitly and still run the focused tests that cover the changed adapter behavior.

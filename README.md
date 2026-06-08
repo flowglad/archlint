@@ -8,8 +8,9 @@ The implementation is split into one shared evaluator and language-specific fact
 - `go/` parses Go source and emits architecture facts as JSON.
 - `ocaml/` parses OCaml source with compiler-libs and emits architecture facts as JSON.
 - `swift/` parses Swift source with SwiftSyntax and emits architecture facts as JSON.
+- `typescript/` parses TypeScript source with the TypeScript compiler API and emits architecture facts as JSON.
 
-Adapters should not own policy or call the evaluator. Do not add new policy to `go/`, `ocaml/`, or `swift/` when the rule can be expressed over the shared fact schema.
+Adapters should not own policy or call the evaluator. Do not add new policy to `go/`, `ocaml/`, `swift/`, or `typescript/` when the rule can be expressed over the shared fact schema.
 
 When multiple adapters are requested, their facts are not merged before policy evaluation. The Go, OCaml, and Swift adapters describe different language universes, so shell-to-core, core-to-test, and state-to-stateTest relationships are evaluated inside each adapter result. Cross-language architecture relationships should be represented through explicit interface modules or backend API contracts, not by sharing an `@archlint.domain` string.
 
@@ -39,6 +40,12 @@ Run OCaml adapter fixture tests:
 sh ocaml/test.sh
 ```
 
+Run TypeScript adapter fixture tests:
+
+```sh
+sh typescript/test.sh
+```
+
 Consumer repositories can call the evaluator directly:
 
 ```sh
@@ -50,17 +57,20 @@ uv run --project /path/to/archlint python /path/to/archlint/evaluate.py \
   --adapter ocaml \
   --ocaml-root . \
   --adapter swift \
-  --swift-xcodegen path/to/project.yml
+  --swift-xcodegen path/to/project.yml \
+  --adapter typescript \
+  --typescript-root tools/ts2pant
 ```
 
 Adapter-specific inputs:
 
 - `--repo-root`: consumer repository root.
-- `--adapter`: `go`, `ocaml`, or `swift`; may be repeated.
+- `--adapter`: `go`, `ocaml`, `swift`, or `typescript`; may be repeated.
 - `--go-module`: Go module path relative to `--repo-root`.
 - `--go-packages`: Go package pattern relative to `--go-module`.
 - `--ocaml-root`: OCaml source root relative to `--repo-root`. Defaults to `.`.
 - `--swift-xcodegen`: XcodeGen project manifest path relative to `--repo-root`.
+- `--typescript-root`: TypeScript source root relative to `--repo-root`. Defaults to `.`.
 
 The evaluator also accepts a fact JSON document on stdin or as a positional file path. This is mainly for tests and diagnostics.
 
