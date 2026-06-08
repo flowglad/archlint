@@ -189,13 +189,18 @@ func Route() string {
 }
 
 func TestGoModuleNameAndQualifiedReferences(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "decision.go")
-	source := `// @archlint.module core
+	backendRoot := newBackendFixture(t, map[string]string{
+		"internal/routing/transport/transport.go": `package transport
+
+func Send() string {
+	return "sent"
+}
+`,
+		"internal/routing/decision.go": `// @archlint.module core
 // @archlint.domain routing
 package routing
 
-import "example.com/app/transport"
+import "archlintfixture/internal/routing/transport"
 
 type t struct{}
 
@@ -205,14 +210,12 @@ func Decide() string {
 	send := transport.Send()
 	return send
 }
-`
-	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fact, violations := goArchitectureFileFact(path, goLoadedFileContext{})
-	if len(violations) != 0 {
-		t.Fatalf("unexpected violations: %v", violations)
-	}
+`,
+	})
+	facts, violations := goArchitectureFacts(filepath.Join(backendRoot, "apps/backend"), "./internal/...")
+	assertNoViolations(t, violations)
+
+	fact := findFileFact(t, facts, "internal/routing/decision.go")
 	if fact.ModuleName != "routing" {
 		t.Fatalf("ModuleName = %q, want %q", fact.ModuleName, "routing")
 	}
@@ -227,8 +230,6 @@ func Decide() string {
 }
 
 func TestGoSemanticQualifiedReferencesResolveBareUses(t *testing.T) {
-	t.Skip("PENDING: Patch 2")
-
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/provider/provider.go": `package provider
 
@@ -242,8 +243,12 @@ package mail
 
 import . "archlintfixture/internal/mail/provider"
 
+type t struct{}
+
 func DecideSend() string {
-	return Send()
+	send := Send()
+	var _ t
+	return send
 }
 `,
 	})
@@ -251,13 +256,11 @@ func DecideSend() string {
 	facts, violations := goArchitectureFacts(filepath.Join(backendRoot, "apps/backend"), "./internal/...")
 	assertNoViolations(t, violations)
 
-	for _, fileFact := range facts.Files {
-		if strings.HasSuffix(fileFact.Path, "internal/mail/decision.go") {
-			assertStringSliceContains(t, fileFact.QualifiedReferences, "provider.Send")
-			return
-		}
+	fileFact := findFileFact(t, facts, "internal/mail/decision.go")
+	assertStringSliceContains(t, fileFact.QualifiedReferences, "provider.Send")
+	for _, unwanted := range []string{"t", "send", "Send", "mail.t", "mail.send"} {
+		assertStringSliceDoesNotContain(t, fileFact.QualifiedReferences, unwanted)
 	}
-	t.Fatal("expected facts for internal/mail/decision.go")
 }
 
 func TestLintBackendArchitectureRejectsHandlerWithOnlyArbitraryCoreTypeReference(t *testing.T) {
@@ -961,9 +964,12 @@ func DecideSync() bool {
 // @archlint.domain auth
 package mail
 
-import "testing/quick"
+import (
+	"testing"
+	"testing/quick"
+)
 
-func TestDecideSyncProperty() {
+func TestDecideSyncProperty(t *testing.T) {
 	_ = quick.Check
 }
 `,
@@ -988,9 +994,12 @@ func DecideSync() bool {
 // @archlint.domain mail
 package mail
 
-import "testing/quick"
+import (
+	"testing"
+	"testing/quick"
+)
 
-func TestDecideSyncProperty() {
+func TestDecideSyncProperty(t *testing.T) {
 	_ = quick.Check
 }
 `,
@@ -1263,9 +1272,12 @@ func DecideState() bool {
 // @archlint.domain mail
 package mail
 
-import "testing/quick"
+import (
+	"testing"
+	"testing/quick"
+)
 
-func TestDecideStateProperty() {
+func TestDecideStateProperty(t *testing.T) {
 	_ = quick.Check
 }
 `,
@@ -1351,9 +1363,12 @@ func DecideState() bool {
 // @archlint.domain auth
 package mail
 
-import "testing/quick"
+import (
+	"testing"
+	"testing/quick"
+)
 
-func TestDecideStateOperationSequencesProperty() {
+func TestDecideStateOperationSequencesProperty(t *testing.T) {
 	_ = quick.Check
 }
 `,
@@ -1573,6 +1588,18 @@ func writeFixtureFile(t *testing.T, root string, relativePath string, contents s
 	if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func findFileFact(t *testing.T, facts architectureFactDocument, suffix string) architectureFileFact {
+	t.Helper()
+
+	for _, fileFact := range facts.Files {
+		if strings.HasSuffix(fileFact.Path, suffix) {
+			return fileFact
+		}
+	}
+	t.Fatalf("expected facts for %s", suffix)
+	return architectureFileFact{}
 }
 
 func assertNoViolations(t *testing.T, violations []violation) {
