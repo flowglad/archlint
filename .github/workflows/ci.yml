@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# One job per language: the five suites are independent, so they run in
+# parallel and cache their toolchains separately. Every adapter job also needs
+# uv + Python because each suite ultimately invokes evaluate.py.
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v2
+      - run: just test-py
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v2
+      - run: just test-go
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v2
+      - run: just test-ts
+
+  ocaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Provides opam + a 5.4 compiler and caches the opam root. We do not let
+      # setup-ocaml pin/install our package; the self-contained local switch
+      # (ocaml/_opam) is created by `just setup-ocaml`, matching local dev.
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          opam-pin: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v2
+      - run: just setup-ocaml
+      - run: just test-ocaml
+
+  swift:
+    # macOS runners ship the Swift toolchain, avoiding a slow Linux setup.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v2
+      - uses: actions/cache@v4
+        with:
+          path: swift/.build
+          key: swift-build-${{ runner.os }}-${{ hashFiles('swift/Package.resolved') }}
+          restore-keys: swift-build-${{ runner.os }}-
+      - run: just test-swift

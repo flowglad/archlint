@@ -2,6 +2,8 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ARCHLINT_ROOT="$ROOT"
+. "$ROOT/test/lib.sh"
 TMPDIR="${TMPDIR:-/tmp}/archlint-typescript-fixture-$$"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -68,7 +70,7 @@ uv run --project "$ROOT" python "$ROOT/evaluate.py" \
   --typescript-root .
 
 npm --prefix "$ROOT/typescript" run --silent archlint -- --repo-root "$TMPDIR" --typescript-root . > "$TMPDIR/facts.json"
-uv run --project "$ROOT" python - "$TMPDIR/facts.json" <<'PY'
+assert_facts "$TMPDIR/facts.json" <<'PY'
 import json
 import sys
 
@@ -116,13 +118,6 @@ test("constant property", () => {
 });
 TS
 
-if uv run --project "$ROOT" python "$ROOT/evaluate.py" \
-  --repo-root "$TMPDIR" \
-  --adapter typescript \
-  --typescript-root . > "$TMPDIR/constant.out"
-then
-  echo "constant generated-input property unexpectedly passed" >&2
-  exit 1
-fi
-grep -q "core module property tests must reference every decision API: decideConstant" "$TMPDIR/constant.out" \
-  || cat "$TMPDIR/constant.out" >&2
+expect_violation "core module property tests must reference every decision API: decideConstant" \
+  uv run --project "$ROOT" python "$ROOT/evaluate.py" \
+  --repo-root "$TMPDIR" --adapter typescript --typescript-root .

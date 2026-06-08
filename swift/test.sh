@@ -6,148 +6,15 @@ repo_root="$(CDPATH= cd -- "$package_root/.." && pwd)"
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT INT TERM
 
+ARCHLINT_ROOT="$repo_root"
+. "$repo_root/test/lib.sh"
+
 run_lint() {
   uv run --project "$repo_root" python "$repo_root/evaluate.py" --repo-root "$1" --adapter swift --swift-xcodegen apps/ios/project.yml
 }
 
 run_adapter() {
   swift run --package-path "$package_root" SwiftArchLint --repo-root "$1" --xcodegen apps/ios/project.yml
-}
-
-assert_passes() {
-  fixture="$1"
-  if ! output="$(run_lint "$fixture" 2>&1)"; then
-    printf '%s\n' "expected fixture to pass: $fixture" >&2
-    printf '%s\n' "$output" >&2
-    exit 1
-  fi
-}
-
-assert_fails_with() {
-  fixture="$1"
-  expected="$2"
-  if output="$(run_lint "$fixture" 2>&1)"; then
-    printf '%s\n' "expected fixture to fail: $fixture" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
-    printf '%s\n' "expected fixture output to contain: $expected" >&2
-    printf '%s\n' "$output" >&2
-    exit 1
-  fi
-}
-
-assert_fact_refs_contain() {
-  fixture="$1"
-  suffix="$2"
-  field="$3"
-  expected="$4"
-  if ! output="$(run_adapter "$fixture")"; then
-    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
-import json
-import sys
-
-suffix = sys.argv[1]
-field = sys.argv[2]
-expected = sys.argv[3]
-document = json.load(sys.stdin)
-matches = [item for item in document["files"] if item["path"].endswith(suffix)]
-if not matches:
-    raise SystemExit(f"missing fact ending with {suffix}")
-if field == "propertyTestReferences":
-    references = {
-        reference
-        for check in matches[0]["propertyChecks"]
-        for reference in check["references"]
-    }
-elif field == "propertyOperationSequenceReferences":
-    references = {
-        reference
-        for check in matches[0]["propertyChecks"]
-        for sequence in check["operationSequences"]
-        for reference in sequence["operations"] + sequence["assertions"]
-    }
-else:
-    references = set(matches[0][field])
-if expected not in references:
-    raise SystemExit(f"missing {expected} in {sorted(references)}")
-' "$suffix" "$field" "$expected"; then
-    exit 1
-  fi
-}
-
-assert_fact_refs_not_contain() {
-  fixture="$1"
-  suffix="$2"
-  field="$3"
-  unexpected="$4"
-  if ! output="$(run_adapter "$fixture")"; then
-    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
-import json
-import sys
-
-suffix = sys.argv[1]
-field = sys.argv[2]
-unexpected = sys.argv[3]
-document = json.load(sys.stdin)
-matches = [item for item in document["files"] if item["path"].endswith(suffix)]
-if not matches:
-    raise SystemExit(f"missing fact ending with {suffix}")
-if field == "propertyTestReferences":
-    references = {
-        reference
-        for check in matches[0]["propertyChecks"]
-        for reference in check["references"]
-    }
-elif field == "propertyOperationSequenceReferences":
-    references = {
-        reference
-        for check in matches[0]["propertyChecks"]
-        for sequence in check["operationSequences"]
-        for reference in sequence["operations"] + sequence["assertions"]
-    }
-else:
-    references = set(matches[0][field])
-if unexpected in references:
-    raise SystemExit(f"unexpected {unexpected} in {sorted(references)}")
-' "$suffix" "$field" "$unexpected"; then
-    exit 1
-  fi
-}
-
-assert_shared_state_contains() {
-  fixture="$1"
-  suffix="$2"
-  expected_kind="$3"
-  expected_reference="$4"
-  if ! output="$(run_adapter "$fixture")"; then
-    printf '%s\n' "expected adapter facts for fixture: $fixture" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$output" | uv run --project "$repo_root" python -c '
-import json
-import sys
-
-suffix = sys.argv[1]
-expected_kind = sys.argv[2]
-expected_reference = sys.argv[3]
-document = json.load(sys.stdin)
-matches = [item for item in document["files"] if item["path"].endswith(suffix)]
-if not matches:
-    raise SystemExit(f"missing fact ending with {suffix}")
-for evidence in matches[0]["sharedState"]:
-    if evidence["kind"] == expected_kind and expected_reference in set(evidence["references"]):
-        raise SystemExit(0)
-raise SystemExit(f"missing shared state {expected_kind}:{expected_reference} in {matches[0]['sharedState']}")
-' "$suffix" "$expected_kind" "$expected_reference"; then
-    exit 1
-  fi
 }
 
 new_fixture() {

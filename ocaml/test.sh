@@ -2,6 +2,8 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ARCHLINT_ROOT="$ROOT"
+. "$ROOT/test/lib.sh"
 TMPDIR="${TMPDIR:-/tmp}/archlint-ocaml-fixture-$$"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -60,7 +62,7 @@ let () =
     end)
 ML
 
-eval "$(opam env --switch "$ROOT/../onton" --set-switch --shell=sh)"
+eval "$(opam env --switch "${ARCHLINT_OPAM_SWITCH:-$ROOT/ocaml}" --set-switch --shell=sh)"
 dune build --root "$ROOT/ocaml" >/dev/null
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts.json"
 uv run --project "$ROOT" python "$ROOT/evaluate.py" "$TMPDIR/facts.json"
@@ -90,7 +92,7 @@ let suite =
 ML
 
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts-state.json"
-uv run --project "$ROOT" python - "$TMPDIR/facts-state.json" <<'PY'
+assert_facts "$TMPDIR/facts-state.json" <<'PY'
 import json
 import sys
 
@@ -139,11 +141,8 @@ let suite =
   ]
 ML
 
-if dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . \
-  | uv run --project "$ROOT" python "$ROOT/evaluate.py" >"$TMPDIR/constant.out"
-then
-  echo "constant generated-input property unexpectedly passed" >&2
-  exit 1
-fi
-grep -q "core module property tests must reference every decision API: decide" "$TMPDIR/constant.out" \
-  || cat "$TMPDIR/constant.out" >&2
+constant_lint() {
+  dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . \
+    | uv run --project "$ROOT" python "$ROOT/evaluate.py"
+}
+expect_violation "core module property tests must reference every decision API: decide" constant_lint

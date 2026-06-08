@@ -16,35 +16,43 @@ When multiple adapters are requested, their facts are not merged before policy e
 
 ## Running
 
-Run evaluator tests from this repository:
+Tests are driven through [`just`](https://github.com/casey/just). Run `just` with no
+arguments to list the recipes.
+
+Run every suite (evaluator + all four adapters) in parallel with an aggregated summary:
 
 ```sh
-uv run --project . python evaluate_test.py
+just test
 ```
 
-Run Go adapter tests:
+Run a single suite:
 
 ```sh
-cd go && go test .
+just test-py      # shared evaluator (policy) unit tests
+just test-go      # Go adapter
+just test-ocaml   # OCaml adapter
+just test-swift   # Swift adapter
+just test-ts      # TypeScript adapter
 ```
 
-Run Swift adapter fixture tests:
+There is no dependency-aware build layer on top of the adapters: each native toolchain
+(`dune`, `swift`, `npm`, `go`) already handles its own incremental rebuilds, so `just`
+is only a task runner that fans the independent suites out concurrently.
+
+Prepare all adapter toolchains and dependencies in one step:
 
 ```sh
-sh swift/test.sh
+just setup
 ```
 
-Run OCaml adapter fixture tests:
+The OCaml adapter is self-contained: it builds in its own local opam switch at
+`ocaml/_opam`, created on demand by `just setup-ocaml` (and as a prerequisite of
+`just test-ocaml`). It does not borrow a switch from any sibling repository. Override the
+switch by exporting `ARCHLINT_OPAM_SWITCH` before invoking `just`.
 
-```sh
-sh ocaml/test.sh
-```
-
-Run TypeScript adapter fixture tests:
-
-```sh
-sh typescript/test.sh
-```
+Each recipe is a thin wrapper, so the underlying commands still work directly if
+preferred — for example `cd go && go test ./...` or `sh swift/test.sh`. The Go suite is
+native Go tests that invoke `evaluate.py` as a subprocess.
 
 Consumer repositories can call the evaluator directly:
 
