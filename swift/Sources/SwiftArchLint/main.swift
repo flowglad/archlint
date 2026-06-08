@@ -18,6 +18,7 @@ struct Violation: Comparable {
 struct SwiftFileInfo {
   let url: URL
   let source: String
+  let moduleName: String
   let metadata: ModuleMetadata
   let imports: Set<String>
   let identifiers: Set<String>
@@ -298,11 +299,12 @@ enum SwiftArchLint {
     return SwiftFileInfo(
       url: fileURL,
       source: source,
+      moduleName: capitalizedModuleName(for: fileURL),
       metadata: metadata,
       imports: Set(visitor.importedModules),
       identifiers: Set(visitor.identifiers),
       apiReferences: Set(visitor.apiReferences),
-      qualifiedReferences: Set(visitor.qualifiedReferences),
+      qualifiedReferences: [],
       decisionReferences: Set(visitor.decisionReferences),
       decisionSurface: Set(visitor.decisionSurface),
       propertyTestSurface: Set(visitor.propertyTestSurface),
@@ -379,6 +381,14 @@ enum SwiftArchLint {
     return ModuleMetadata(moduleType: moduleType, domain: domain, exemptReason: exemptReason)
   }
 
+  private static func capitalizedModuleName(for fileURL: URL) -> String {
+    let basename: String = fileURL.deletingPathExtension().lastPathComponent
+    guard let firstCharacter: Character = basename.first else {
+      return basename
+    }
+    return String(firstCharacter).uppercased() + basename.dropFirst()
+  }
+
   private static func sourceFact(_ fileInfo: SwiftFileInfo, testScope: String)
     -> SourceFact
   {
@@ -397,7 +407,7 @@ enum SwiftArchLint {
       propertyTestSurface: fileInfo.propertyTestSurface.sorted(),
       decisionProducts: fileInfo.decisionProducts.sorted(),
       decisionReferences: fileInfo.decisionReferences.sorted(),
-      moduleName: fileInfo.url.deletingPathExtension().lastPathComponent,
+      moduleName: fileInfo.moduleName,
       qualifiedReferences: fileInfo.qualifiedReferences.sorted(),
       effectfulImports: fileInfo.imports.intersection(effectfulModules).sorted(),
       effectfulIdentifiers: fileInfo.identifiers.intersection(effectfulTypes).sorted(),
