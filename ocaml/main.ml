@@ -645,7 +645,16 @@ let rec collect_structure_item facts item =
                        facts.function_references <-
                          StringMap.add name
                            (api_references_in_expression binding.pvb_expr)
-                           facts.function_references);
+                           facts.function_references)
+                     else if is_bindable_name name then
+                       (* Non-function bindings (e.g. QCheck generators bound at
+                          top level) join the call graph too, so reference
+                          expansion is uniform across all bindings rather than
+                          functions only. *)
+                       facts.function_references <-
+                         StringMap.add name
+                           (api_references_in_expression binding.pvb_expr)
+                           facts.function_references;
                      facts.decision_references <- add facts.decision_references name);
           if not (StringSet.is_empty names) && not (expression_is_function binding.pvb_expr)
           then
@@ -721,14 +730,18 @@ let collect_expression_facts facts expression =
             | _ -> ());
             if is_property_test_call called then
               let property_body = function_body_argument args in
+              (* Harvest references from every argument — the callback *and* the
+                 generator (and any helper they name) — expanded through the call
+                 graph. A reference reachable from the generator that builds the
+                 inputs, not only the assertion callback, still counts. *)
               let references =
-                match property_body with
-                | Some body ->
-                    expanded_api_references facts
-                      (api_references_in_expression body)
-                      StringSet.empty
-                    |> set_to_list
-                | None -> []
+                args
+                |> List.fold_left
+                     (fun acc (_label, argument) ->
+                       StringSet.union acc (api_references_in_expression argument))
+                     StringSet.empty
+                |> (fun direct -> expanded_api_references facts direct StringSet.empty)
+                |> set_to_list
               in
               let generated_inputs =
                 match property_body with
@@ -755,6 +768,33 @@ let collect_expression_facts facts expression =
     }
   in
   iterator.expr iterator expression
+
+(* Does this expression directly contain a *meaningful* property check — a
+   QCheck2 test whose callback actually uses a generated input? (A linking
+   property over [unit] that only [ignore]s a surface does not count.) *)
+let expression_has_meaningful_property facts expression =
+  let found = ref false in
+  let iterator =
+    {
+      Ast_iterator.default_iterator with
+      expr =
+        (fun self expression ->
+          (match expression.pexp_desc with
+          | Pexp_apply (called, args) when is_property_test_call called -> (
+              match function_body_argument args with
+              | Some body ->
+                  if
+                    List.exists
+                      (fun (input : generated_input) -> input.uses <> [])
+                      (generated_inputs_for_property facts body)
+                  then found := true
+              | None -> ())
+          | _ -> ());
+          Ast_iterator.default_iterator.expr self expression);
+    }
+  in
+  iterator.expr iterator expression;
+  !found
 
 let collect_structure facts structure =
   List.iter (collect_structure_item facts) structure;
@@ -785,7 +825,57 @@ let collect_structure facts structure =
           Ast_iterator.default_iterator.module_expr self module_expr);
     }
   in
-  iterator.structure iterator structure
+  iterator.structure iterator structure;
+  (* Obligatory call-graph closure for property coverage. A binding that builds
+     a meaningful property — even indirectly, by passing a callback to a
+     higher-order test helper (e.g. [let p = totality (fun s -> Core.parse s)])
+     — reaches that property through the call graph. Fold the references of
+     every such binding into the meaningful checks, so coverage follows the
+     graph instead of only the syntactic callback at the QCheck2.Test.make site. *)
+  let producing =
+    List.fold_left
+      (fun acc item ->
+        match item.pstr_desc with
+        | Pstr_value (_, bindings) ->
+            List.fold_left
+              (fun acc binding ->
+                if expression_has_meaningful_property facts binding.pvb_expr then
+                  StringSet.fold
+                    (fun name acc -> if is_bindable_name name then add acc name else acc)
+                    (pattern_names binding.pvb_pat) acc
+                else acc)
+              acc bindings
+        | _ -> acc)
+      StringSet.empty structure
+  in
+  if not (StringSet.is_empty producing) then begin
+    let extra =
+      StringMap.fold
+        (fun binding refs acc ->
+          let expanded = expanded_api_references facts refs StringSet.empty in
+          if
+            StringSet.mem binding producing
+            || not (StringSet.is_empty (StringSet.inter expanded producing))
+          then StringSet.union acc expanded
+          else acc)
+        facts.function_references StringSet.empty
+    in
+    facts.property_checks <-
+      List.map
+        (fun (check : property_check) ->
+          if
+            List.exists
+              (fun (input : generated_input) -> input.uses <> [])
+              check.generated_inputs
+          then
+            {
+              check with
+              references =
+                set_to_list (StringSet.union (StringSet.of_list check.references) extra);
+            }
+          else check)
+        facts.property_checks
+  end
 
 let collect_signature facts signature =
   List.iter (collect_signature_item facts) signature;

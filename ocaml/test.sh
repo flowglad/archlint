@@ -131,6 +131,43 @@ let () =
     Decision.decide
 ML
 
+# Call-graph closure for property coverage: a core whose three decision APIs
+# are each reached differently — directly in a callback (decide_a), only inside
+# a generator (decide_b), and only through a higher-order test helper (decide_c).
+# All must count, so coverage follows the call graph rather than the syntactic
+# callback alone.
+cat > "$TMPDIR/lib/closure_core.ml" <<'ML'
+(* @archlint.module core
+   @archlint.domain demo.closure *)
+
+let decide_a x = x > 0
+let decide_b x = x < 0
+let decide_c x = x = 0
+ML
+
+cat > "$TMPDIR/test/test_closure.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.closure *)
+
+let gen_b =
+  QCheck2.Gen.map (fun x -> ignore (Closure_core.decide_b x); x) QCheck2.Gen.int
+
+let totality name f =
+  QCheck2.Test.make ~name QCheck2.Gen.int (fun x -> ignore (f x); true)
+
+let prop_a =
+  QCheck2.Test.make ~name:"a" QCheck2.Gen.int (fun x ->
+      Closure_core.decide_a x || x >= 0)
+
+let prop_b = QCheck2.Test.make ~name:"b" gen_b (fun x -> x = x)
+let prop_c = totality "c" (fun x -> Closure_core.decide_c x)
+
+let () =
+  QCheck2.Test.check_exn prop_a;
+  QCheck2.Test.check_exn prop_b;
+  QCheck2.Test.check_exn prop_c
+ML
+
 eval "$(opam env --switch "${ARCHLINT_OPAM_SWITCH:-$ROOT/ocaml}" --set-switch --shell=sh)"
 dune build --root "$ROOT/ocaml" >/dev/null
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts.json"
@@ -282,3 +319,25 @@ constant_lint() {
     | uv run --project "$ROOT" python "$ROOT/evaluate.py"
 }
 expect_violation "core module property tests must reference every decision API: decide" constant_lint
+
+# Regression: a linking-only property over [unit] that merely [ignore]s the API
+# is NOT meaningful, so closure must not let it satisfy coverage.
+cat > "$TMPDIR/lib/linkonly_core.ml" <<'ML'
+(* @archlint.module core
+   @archlint.domain demo.linkonly *)
+
+let decide_link x = x > 0
+ML
+
+cat > "$TMPDIR/test/test_linkonly.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.linkonly *)
+
+let prop =
+  QCheck2.Test.make ~name:"link" QCheck2.Gen.unit (fun () ->
+      ignore Linkonly_core.decide_link;
+      true)
+
+let () = QCheck2.Test.check_exn prop
+ML
+expect_violation "core module property tests must reference every decision API: decide_link" constant_lint
