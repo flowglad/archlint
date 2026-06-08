@@ -1,0 +1,124 @@
+name: Archlint
+description: >-
+  Run the archlint architecture conformance suite against the calling
+  repository. Brings the Python evaluator plus the toolchain for the selected
+  language adapter, so a consumer repo needs only this one step in its CI.
+
+# Consumers reference this as `uses: flowglad/archlint@v1`. GitHub checks the
+# archlint repo out into ${{ github.action_path }} automatically, so the
+# evaluator and every adapter travel with the action; nothing is cloned by the
+# consumer. evaluate.py resolves adapters relative to its own location, so only
+# --repo-root has to point back at the consumer's workspace.
+
+inputs:
+  adapter:
+    description: "Adapter to run: go | ocaml | swift | typescript."
+    required: true
+  repo-root:
+    description: Repository root to analyze. Defaults to the consumer checkout.
+    required: false
+    default: ${{ github.workspace }}
+  ocaml-root:
+    description: OCaml source root, relative to repo-root (adapter=ocaml).
+    required: false
+    default: "."
+  typescript-root:
+    description: TypeScript source root, relative to repo-root (adapter=typescript).
+    required: false
+    default: "."
+  go-module:
+    description: Go module path, relative to repo-root (adapter=go).
+    required: false
+    default: ""
+  go-packages:
+    description: Go package pattern, relative to go-module (adapter=go).
+    required: false
+    default: "./..."
+  swift-xcodegen:
+    description: XcodeGen manifest path, relative to repo-root (adapter=swift).
+    required: false
+    default: ""
+  python-version:
+    description: Python version for the evaluator.
+    required: false
+    default: "3.14"
+
+runs:
+  using: composite
+  steps:
+    # The evaluator always runs, regardless of adapter: every adapter shells
+    # back out to evaluate.py, which validates facts and applies policy.
+    - uses: astral-sh/setup-uv@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    - shell: bash
+      run: uv sync --project "$GITHUB_ACTION_PATH"
+
+    # One toolchain-setup block per adapter, gated on the selected adapter so a
+    # consumer only pays for the language it uses. These mirror the per-language
+    # jobs in this repo's own .github/workflows/ci.yml.
+    - if: inputs.adapter == 'go'
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache-dependency-path: ${{ github.action_path }}/go/go.sum
+
+    - if: inputs.adapter == 'typescript'
+      uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - if: inputs.adapter == 'typescript'
+      shell: bash
+      run: npm --prefix "$GITHUB_ACTION_PATH/typescript" install
+
+    - if: inputs.adapter == 'ocaml'
+      uses: ocaml/setup-ocaml@v3
+      with:
+        ocaml-compiler: "5.4"
+    - if: inputs.adapter == 'ocaml'
+      shell: bash
+      # Install the adapter's deps into the switch setup-ocaml just provisioned.
+      # evaluate.py runs `dune exec`, which builds the adapter on demand against
+      # the active switch, so no separate build step is needed here.
+      run: opam install "$GITHUB_ACTION_PATH/ocaml" --deps-only --yes
+
+    # swift needs no setup step: GitHub's macOS runners ship the toolchain, and
+    # evaluate.py builds the adapter via `swift run`. Run this adapter on a
+    # macos-latest job in the consumer workflow.
+
+    - shell: bash
+      env:
+        ADAPTER: ${{ inputs.adapter }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+        OCAML_ROOT: ${{ inputs.ocaml-root }}
+        TS_ROOT: ${{ inputs.typescript-root }}
+        GO_MODULE: ${{ inputs.go-module }}
+        GO_PACKAGES: ${{ inputs.go-packages }}
+        SWIFT_XCODEGEN: ${{ inputs.swift-xcodegen }}
+      run: |
+        set -euo pipefail
+        args=(--repo-root "$REPO_ROOT" --adapter "$ADAPTER")
+        case "$ADAPTER" in
+          ocaml)      args+=(--ocaml-root "$OCAML_ROOT") ;;
+          typescript) args+=(--typescript-root "$TS_ROOT") ;;
+          go)
+            if [ -z "$GO_MODULE" ]; then
+              echo "::error::adapter 'go' requires the go-module input" >&2
+              exit 1
+            fi
+            args+=(--go-module "$GO_MODULE" --go-packages "$GO_PACKAGES")
+            ;;
+          swift)
+            if [ -z "$SWIFT_XCODEGEN" ]; then
+              echo "::error::adapter 'swift' requires the swift-xcodegen input" >&2
+              exit 1
+            fi
+            args+=(--swift-xcodegen "$SWIFT_XCODEGEN")
+            ;;
+          *)
+            echo "::error::unknown adapter '$ADAPTER' (expected go|ocaml|swift|typescript)" >&2
+            exit 1
+            ;;
+        esac
+        uv run --project "$GITHUB_ACTION_PATH" \
+          python "$GITHUB_ACTION_PATH/evaluate.py" "${args[@]}"
