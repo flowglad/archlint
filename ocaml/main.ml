@@ -281,20 +281,92 @@ let record_longident facts lid =
   let parts = lid_parts lid in
   List.iter (add_identifier facts) parts;
   add_api_reference facts (lid_last lid);
-  (* A module-qualified reference like [Backend_registry.auto_model] is recorded
-     in full so the dependency-direction rule can match against a same-domain
-     module's qualified surface ([Module_name + "." + declared]) rather than on
-     a bare, collision-prone last segment. A bare use (after [open], or a local
-     binding) has a single part and is intentionally not recorded here. *)
-  (match parts with
-  | _ :: _ :: _ -> facts.qualified_references <- add facts.qualified_references (lid_text lid)
-  | _ -> ());
   List.iter
     (fun part ->
       if StringSet.mem part test_library_identifiers then facts.api_references <- add facts.api_references part;
       if StringSet.mem part effectful_identifiers then
         facts.effectful_identifiers <- add facts.effectful_identifiers part)
     parts
+
+let record_typedtree_reference facts ~current_module ~owner_modules path =
+  match Path.flatten (Path.scrape_extra_ty path) with
+  | `Contains_apply -> ()
+  | `Ok (head, suffixes) -> (
+      let owner_module = Ident.name head in
+      match List.rev suffixes with
+      | symbol :: _
+        when owner_module <> current_module
+             && StringSet.mem owner_module owner_modules ->
+          facts.qualified_references <-
+            add facts.qualified_references (owner_module ^ "." ^ symbol)
+      | _ -> ())
+
+let collect_typedtree_qualified_references ~current_module ~owner_modules artifact =
+  let facts = empty_facts () in
+  let record = record_typedtree_reference facts ~current_module ~owner_modules in
+  let iterator =
+    {
+      Tast_iterator.default_iterator with
+      expr =
+        (fun self expression ->
+          (match expression.Typedtree.exp_desc with
+          | Typedtree.Texp_ident (path, _, _) -> record path
+          | Typedtree.Texp_new (path, _, _) -> record path
+          | Typedtree.Texp_instvar (_, path, _)
+          | Typedtree.Texp_setinstvar (_, path, _, _) ->
+              record path
+          | _ -> ());
+          Tast_iterator.default_iterator.expr self expression);
+      typ =
+        (fun self core_type ->
+          (match core_type.Typedtree.ctyp_desc with
+          | Typedtree.Ttyp_constr (path, _, _)
+          | Typedtree.Ttyp_class (path, _, _)
+          | Typedtree.Ttyp_open (path, _, _) ->
+              record path
+          | _ -> ());
+          Tast_iterator.default_iterator.typ self core_type);
+      module_expr =
+        (fun self module_expr ->
+          (match module_expr.Typedtree.mod_desc with
+          | Typedtree.Tmod_ident (path, _) -> record path
+          | _ -> ());
+          Tast_iterator.default_iterator.module_expr self module_expr);
+      module_type =
+        (fun self module_type ->
+          (match module_type.Typedtree.mty_desc with
+          | Typedtree.Tmty_ident (path, _)
+          | Typedtree.Tmty_alias (path, _) ->
+              record path
+          | Typedtree.Tmty_with (module_type, constraints) ->
+              List.iter
+                (fun (path, _, _) -> record path)
+                constraints;
+              Tast_iterator.default_iterator.module_type self module_type
+          | _ -> ());
+          Tast_iterator.default_iterator.module_type self module_type);
+    }
+  in
+  let rec iter_binary_annots = function
+    | Cmt_format.Implementation structure -> iterator.structure iterator structure
+    | Cmt_format.Interface signature -> iterator.signature iterator signature
+    | Cmt_format.Partial_implementation parts | Cmt_format.Partial_interface parts ->
+        Array.iter iter_binary_part parts
+    | Cmt_format.Packed _ -> ()
+  and iter_binary_part = function
+    | Cmt_format.Partial_structure structure -> iterator.structure iterator structure
+    | Cmt_format.Partial_structure_item item -> iterator.structure_item iterator item
+    | Cmt_format.Partial_expression expression -> iterator.expr iterator expression
+    | Cmt_format.Partial_pattern (_, pattern) -> iterator.pat iterator pattern
+    | Cmt_format.Partial_class_expr class_expr -> iterator.class_expr iterator class_expr
+    | Cmt_format.Partial_signature signature -> iterator.signature iterator signature
+    | Cmt_format.Partial_signature_item item -> iterator.signature_item iterator item
+    | Cmt_format.Partial_module_type module_type ->
+        iterator.module_type iterator module_type
+  in
+  let cmt = Cmt_format.read_cmt artifact.artifact_path in
+  iter_binary_annots cmt.Cmt_format.cmt_annots;
+  facts.qualified_references
 
 let record_state_type_reference facts lid =
   let parts = lid_parts lid in
@@ -858,12 +930,23 @@ let shared_state_facts facts =
 let effectful_import_list imports =
   imports |> List.filter (fun import -> StringSet.mem import effectful_imports)
 
-let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts:_ path =
+let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts ~owner_modules path =
   let source = read_file path in
   let metadata = parse_metadata source in
   let facts =
     try parse_ocaml_file path source with
     | Syntaxerr.Error _ | Lexer.Error _ -> fact_for_unparseable_file path source
+  in
+  let module_name = String.capitalize_ascii (basename_without_extension path) in
+  let artifact =
+    match StringMap.find_opt (absolute_path path) typedtree_artifacts with
+    | Some artifact -> artifact
+    | None ->
+        failwith (Printf.sprintf "missing typedtree artifact for %s" (absolute_path path))
+  in
+  let qualified_references =
+    collect_typedtree_qualified_references ~current_module:module_name ~owner_modules
+      artifact
   in
   let decision_surface, property_test_surface, decision_references =
     if Filename.check_suffix path ".ml" then
@@ -878,8 +961,8 @@ let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts:_ pat
   {
     path;
     test_scope = infer_test_scope ~test_scope_paths path facts;
-    module_name = String.capitalize_ascii (basename_without_extension path);
-    qualified_references = set_to_list facts.qualified_references;
+    module_name;
+    qualified_references = set_to_list qualified_references;
     metadata;
     imports = set_to_list facts.imports;
     identifiers = set_to_list facts.identifiers;
@@ -1190,6 +1273,11 @@ let () =
   in
   let paths = collect_ocaml_files source_root in
   let typedtree_artifacts = load_typedtree_artifacts ~source_root paths in
+  let owner_modules =
+    paths
+    |> List.map (fun path -> String.capitalize_ascii (basename_without_extension path))
+    |> List.fold_left add StringSet.empty
+  in
   let test_scope_paths = StringSet.of_list (collect_test_scope_paths source_root) in
   let interfaces =
     List.fold_left
@@ -1200,7 +1288,10 @@ let () =
       StringMap.empty paths
   in
   let files =
-    paths |> List.map (source_fact ~root ~interfaces ~test_scope_paths ~typedtree_artifacts)
+    paths
+    |> List.map
+         (source_fact ~root ~interfaces ~test_scope_paths ~typedtree_artifacts
+            ~owner_modules)
   in
   let json = `Assoc [ ("files", `List (List.map file_fact_to_json files)) ] in
   Yojson.Safe.pretty_to_channel stdout json;

@@ -165,6 +165,8 @@ cat > "$TMPDIR/lib/open_shell.ml" <<'ML'
    @archlint.domain demo.opened *)
 
 let decide () = `Opened
+
+let incidental = "implementation"
 ML
 
 cat > "$TMPDIR/lib/open_core.ml" <<'ML'
@@ -174,6 +176,10 @@ cat > "$TMPDIR/lib/open_core.ml" <<'ML'
 open Open_shell
 
 let run () = decide ()
+
+let incidental () =
+  let incidental = "local" in
+  incidental
 ML
 
 # A hand-rolled harness in a dune (test ...) stanza: no Alcotest/QCheck/etc.,
@@ -246,9 +252,9 @@ assert "Js_of_ocaml" in export["effectfulImports"], export
 assert "Js" in export["effectfulIdentifiers"], export
 counter = [item for item in document["files"] if item["path"].endswith("counter.ml")][0]
 assert counter["sharedState"], counter
-# PENDING: Patch 4
-# open_core = [item for item in document["files"] if item["path"].endswith("open_core.ml")][0]
-# assert "Open_shell.decide" in open_core["qualifiedReferences"], open_core
+open_core = [item for item in document["files"] if item["path"].endswith("open_core.ml")][0]
+assert "Open_shell.decide" in open_core["qualifiedReferences"], open_core
+assert "Open_shell.incidental" not in open_core["qualifiedReferences"], open_core
 PY
 
 cat > "$TMPDIR/lib/constant_only.ml" <<'ML'
