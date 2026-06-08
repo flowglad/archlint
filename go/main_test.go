@@ -209,7 +209,7 @@ func Decide() string {
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fact, violations := goArchitectureFileFact(path)
+	fact, violations := goArchitectureFileFact(path, goLoadedFileContext{})
 	if len(violations) != 0 {
 		t.Fatalf("unexpected violations: %v", violations)
 	}
@@ -224,6 +224,40 @@ func Decide() string {
 			t.Fatalf("QualifiedReferences = %v, should not contain bare %q", fact.QualifiedReferences, unwanted)
 		}
 	}
+}
+
+func TestGoSemanticQualifiedReferencesResolveBareUses(t *testing.T) {
+	t.Skip("PENDING: Patch 2")
+
+	backendRoot := newBackendFixture(t, map[string]string{
+		"internal/mail/provider/provider.go": `package provider
+
+func Send() string {
+	return "sent"
+}
+`,
+		"internal/mail/decision.go": `// @archlint.module core
+// @archlint.domain mail
+package mail
+
+import . "archlintfixture/internal/mail/provider"
+
+func DecideSend() string {
+	return Send()
+}
+`,
+	})
+
+	facts, violations := goArchitectureFacts(filepath.Join(backendRoot, "apps/backend"), "./internal/...")
+	assertNoViolations(t, violations)
+
+	for _, fileFact := range facts.Files {
+		if strings.HasSuffix(fileFact.Path, "internal/mail/decision.go") {
+			assertStringSliceContains(t, fileFact.QualifiedReferences, "provider.Send")
+			return
+		}
+	}
+	t.Fatal("expected facts for internal/mail/decision.go")
 }
 
 func TestLintBackendArchitectureRejectsHandlerWithOnlyArbitraryCoreTypeReference(t *testing.T) {
@@ -720,7 +754,7 @@ func unrelated() bool {
 }
 `)
 
-	fileFact, violations := goArchitectureFileFact(path)
+	fileFact, violations := goArchitectureFileFact(path, goLoadedFileContext{})
 
 	assertNoViolations(t, violations)
 	if len(fileFact.PropertyChecks) != 1 {
@@ -761,7 +795,7 @@ func DecideSync(inputs []byte) bool {
 }
 `)
 
-	fileFact, violations := goArchitectureFileFact(path)
+	fileFact, violations := goArchitectureFileFact(path, goLoadedFileContext{})
 
 	assertNoViolations(t, violations)
 	if len(fileFact.PropertyChecks) != 1 {
@@ -1186,7 +1220,7 @@ type MockService struct {
 }
 `)
 
-	fileFact, violations := goArchitectureFileFact(path)
+	fileFact, violations := goArchitectureFileFact(path, goLoadedFileContext{})
 
 	assertNoViolations(t, violations)
 	if len(fileFact.SharedState) != 1 {
