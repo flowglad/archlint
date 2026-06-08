@@ -89,8 +89,11 @@ type architectureInterfaceEvidence struct {
 }
 
 type goLoadedFileContext struct {
-	syntaxFile *ast.File
-	typesInfo  *types.Info
+	syntaxFile                *ast.File
+	typesInfo                 *types.Info
+	typesPackage              *types.Package
+	requireSemanticReferences bool
+	loadedFromTestPackage     bool
 }
 
 func main() {
@@ -140,7 +143,9 @@ func goArchitectureFacts(moduleRoot string, packagePattern string) (architecture
 	seenFiles := map[string]struct{}{}
 	for _, path := range goPackagePatternFiles(moduleRoot, packagePattern) {
 		seenFiles[path] = struct{}{}
-		fileFact, factViolations := goArchitectureFileFact(path, loadedFiles[path])
+		loadedFile := loadedFiles[path]
+		loadedFile.requireSemanticReferences = true
+		fileFact, factViolations := goArchitectureFileFact(path, loadedFile)
 		violations = append(violations, factViolations...)
 		if len(factViolations) == 0 {
 			facts.Files = append(facts.Files, fileFact)
@@ -155,7 +160,9 @@ func goArchitectureFacts(moduleRoot string, packagePattern string) (architecture
 				continue
 			}
 			seenFiles[path] = struct{}{}
-			fileFact, factViolations := goArchitectureFileFact(path, loadedFiles[path])
+			loadedFile := loadedFiles[path]
+			loadedFile.requireSemanticReferences = true
+			fileFact, factViolations := goArchitectureFileFact(path, loadedFile)
 			violations = append(violations, factViolations...)
 			if len(factViolations) == 0 {
 				facts.Files = append(facts.Files, fileFact)
@@ -189,8 +196,9 @@ func goPackagePatternFiles(moduleRoot string, packagePattern string) []string {
 
 func loadGoPackages(moduleRoot string, packagePattern string) ([]*packages.Package, []violation) {
 	config := packages.Config{
-		Dir:  moduleRoot,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps,
+		Dir:   moduleRoot,
+		Mode:  packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps,
+		Tests: true,
 	}
 	loadedPackages, err := packages.Load(&config, packagePattern)
 	if err != nil {
@@ -211,6 +219,7 @@ func loadGoPackages(moduleRoot string, packagePattern string) ([]*packages.Packa
 func goLoadedFileContexts(loadedPackages []*packages.Package) map[string]goLoadedFileContext {
 	loadedFiles := map[string]goLoadedFileContext{}
 	for _, loadedPackage := range loadedPackages {
+		fromTestPackage := loadedPackage.ForTest != ""
 		for index, syntaxFile := range loadedPackage.Syntax {
 			var paths []string
 			if index < len(loadedPackage.CompiledGoFiles) {
@@ -220,9 +229,21 @@ func goLoadedFileContexts(loadedPackages []*packages.Package) map[string]goLoade
 				paths = append(paths, loadedPackage.GoFiles[index])
 			}
 			for _, path := range paths {
+				existingFile, exists := loadedFiles[path]
+				if exists && !strings.HasSuffix(path, "_test.go") {
+					if !existingFile.loadedFromTestPackage && fromTestPackage {
+						continue
+					}
+					if existingFile.loadedFromTestPackage && !fromTestPackage {
+						delete(loadedFiles, path)
+					}
+				}
 				loadedFiles[path] = goLoadedFileContext{
-					syntaxFile: syntaxFile,
-					typesInfo:  loadedPackage.TypesInfo,
+					syntaxFile:                syntaxFile,
+					typesInfo:                 loadedPackage.TypesInfo,
+					typesPackage:              loadedPackage.Types,
+					requireSemanticReferences: true,
+					loadedFromTestPackage:     fromTestPackage,
 				}
 			}
 		}
@@ -261,6 +282,9 @@ func goArchitectureFileFact(path string, loadedFile goLoadedFileContext) (archit
 		}
 		syntaxFile = parsedFile
 	}
+	if loadedFile.requireSemanticReferences && (loadedFile.typesInfo == nil || loadedFile.typesPackage == nil) {
+		return architectureFileFact{}, []violation{{path: path, message: "semantic type information unavailable"}}
+	}
 	metadata := moduleMetadataForFile(path)
 	imports := goImports(syntaxFile)
 	identifiers := goIdentifiers(syntaxFile)
@@ -286,7 +310,7 @@ func goArchitectureFileFact(path string, loadedFile goLoadedFileContext) (archit
 		DecisionProducts:       setToSortedSlice(decisionProducts),
 		DecisionReferences:     setToSortedSlice(decisionReferences),
 		ModuleName:             goModuleName(syntaxFile),
-		QualifiedReferences:    setToSortedSlice(goQualifiedReferences(syntaxFile)),
+		QualifiedReferences:    setToSortedSlice(goSemanticQualifiedReferences(syntaxFile, loadedFile.typesInfo, loadedFile.typesPackage)),
 		EffectfulImports:       goEffectfulImports(imports),
 		EffectfulIdentifiers:   []string{},
 		SharedState:            goSharedStateEvidence(syntaxFile),
@@ -347,28 +371,28 @@ func goModuleName(syntaxFile *ast.File) string {
 	return syntaxFile.Name.Name
 }
 
-// goQualifiedReferences records package-qualified selector references in their
-// "pkg.Symbol" form, so the dependency-direction rule matches a genuine
-// cross-package reach rather than a bare, collision-prone selector name. A
-// selector is treated as package-qualified when its base identifier is one of
-// the file's imported package names; field/method selectors on values are not.
-func goQualifiedReferences(syntaxFile *ast.File) map[string]struct{} {
-	importNames := map[string]bool{}
-	for _, names := range goImportNamesByPath(syntaxFile) {
-		for name := range names {
-			importNames[name] = true
-		}
-	}
+// goSemanticQualifiedReferences records cross-package identifier uses in their
+// owner package's "pkg.Symbol" form. This includes symbols written bare through
+// dot imports while excluding builtins, locals, and same-package objects.
+func goSemanticQualifiedReferences(syntaxFile *ast.File, info *types.Info, selfPkg *types.Package) map[string]struct{} {
 	references := map[string]struct{}{}
+	if info == nil || selfPkg == nil {
+		return references
+	}
 	ast.Inspect(syntaxFile, func(node ast.Node) bool {
-		selector, ok := node.(*ast.SelectorExpr)
+		identifier, ok := node.(*ast.Ident)
 		if !ok {
 			return true
 		}
-		base, ok := selector.X.(*ast.Ident)
-		if ok && importNames[base.Name] {
-			references[base.Name+"."+selector.Sel.Name] = struct{}{}
+		object := info.Uses[identifier]
+		if object == nil {
+			return true
 		}
+		ownerPkg := object.Pkg()
+		if ownerPkg == nil || ownerPkg == selfPkg {
+			return true
+		}
+		references[ownerPkg.Name()+"."+object.Name()] = struct{}{}
 		return true
 	})
 	return references
