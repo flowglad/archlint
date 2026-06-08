@@ -8,36 +8,51 @@ The implementation is split into one shared evaluator and language-specific fact
 - `go/` parses Go source and emits architecture facts as JSON.
 - `ocaml/` parses OCaml source with compiler-libs and emits architecture facts as JSON.
 - `swift/` parses Swift source with SwiftSyntax and emits architecture facts as JSON.
+- `typescript/` parses TypeScript source with the TypeScript compiler API and emits architecture facts as JSON.
 
-Adapters should not own policy or call the evaluator. Do not add new policy to `go/`, `ocaml/`, or `swift/` when the rule can be expressed over the shared fact schema.
+Adapters should not own policy or call the evaluator. Do not add new policy to `go/`, `ocaml/`, `swift/`, or `typescript/` when the rule can be expressed over the shared fact schema.
 
 When multiple adapters are requested, their facts are not merged before policy evaluation. The Go, OCaml, and Swift adapters describe different language universes, so shell-to-core, core-to-test, and state-to-stateTest relationships are evaluated inside each adapter result. Cross-language architecture relationships should be represented through explicit interface modules or backend API contracts, not by sharing an `@archlint.domain` string.
 
 ## Running
 
-Run evaluator tests from this repository:
+Tests are driven through [`just`](https://github.com/casey/just). Run `just` with no
+arguments to list the recipes.
+
+Run every suite (evaluator + all four adapters) in parallel with an aggregated summary:
 
 ```sh
-uv run --project . python evaluate_test.py
+just test
 ```
 
-Run Go adapter tests:
+Run a single suite:
 
 ```sh
-cd go && go test .
+just test-py      # shared evaluator (policy) unit tests
+just test-go      # Go adapter
+just test-ocaml   # OCaml adapter
+just test-swift   # Swift adapter
+just test-ts      # TypeScript adapter
 ```
 
-Run Swift adapter fixture tests:
+There is no dependency-aware build layer on top of the adapters: each native toolchain
+(`dune`, `swift`, `npm`, `go`) already handles its own incremental rebuilds, so `just`
+is only a task runner that fans the independent suites out concurrently.
+
+Prepare all adapter toolchains and dependencies in one step:
 
 ```sh
-sh swift/test.sh
+just setup
 ```
 
-Run OCaml adapter fixture tests:
+The OCaml adapter is self-contained: it builds in its own local opam switch at
+`ocaml/_opam`, created on demand by `just setup-ocaml` (and as a prerequisite of
+`just test-ocaml`). It does not borrow a switch from any sibling repository. Override the
+switch by exporting `ARCHLINT_OPAM_SWITCH` before invoking `just`.
 
-```sh
-sh ocaml/test.sh
-```
+Each recipe is a thin wrapper, so the underlying commands still work directly if
+preferred — for example `cd go && go test ./...` or `sh swift/test.sh`. The Go suite is
+native Go tests that invoke `evaluate.py` as a subprocess.
 
 Consumer repositories can call the evaluator directly:
 
@@ -50,17 +65,20 @@ uv run --project /path/to/archlint python /path/to/archlint/evaluate.py \
   --adapter ocaml \
   --ocaml-root . \
   --adapter swift \
-  --swift-xcodegen path/to/project.yml
+  --swift-xcodegen path/to/project.yml \
+  --adapter typescript \
+  --typescript-root tools/ts2pant
 ```
 
 Adapter-specific inputs:
 
 - `--repo-root`: consumer repository root.
-- `--adapter`: `go`, `ocaml`, or `swift`; may be repeated.
+- `--adapter`: `go`, `ocaml`, `swift`, or `typescript`; may be repeated.
 - `--go-module`: Go module path relative to `--repo-root`.
 - `--go-packages`: Go package pattern relative to `--go-module`.
 - `--ocaml-root`: OCaml source root relative to `--repo-root`. Defaults to `.`.
 - `--swift-xcodegen`: XcodeGen project manifest path relative to `--repo-root`.
+- `--typescript-root`: TypeScript source root relative to `--repo-root`. Defaults to `.`.
 
 The evaluator also accepts a fact JSON document on stdin or as a positional file path. This is mainly for tests and diagnostics.
 
@@ -207,7 +225,7 @@ Each file fact includes:
       "generatedInputs": [
         {
           "name": "input",
-          "uses": ["decideSync"]
+          "uses": ["input"]
         }
       ],
       "operationSequences": [
@@ -229,7 +247,7 @@ Each file fact includes:
 }
 ```
 
-Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, the `generatedInputs` observed in the property body, and any generated `operationSequences`. Each generated input reports structural API `uses` where that generated value appears, including ordinary call-graph expansion through helpers when the adapter can prove it structurally. Each operation sequence reports the generated `input` that controls the trace, the operation APIs reached while applying that trace, and assertion/postcondition APIs reached by the same property. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage from generated-input use evidence and state coverage from operation-sequence evidence; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
+Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, the `generatedInputs` observed in the property body, and any generated `operationSequences`. Each generated input reports syntactic `uses` where that generated value participates in the property body. These are anti-vacuity facts, not proof that the value flows to an assertion or specific API. Each operation sequence reports the generated `input` that controls the trace, the operation APIs reached while applying that trace, and assertion/postcondition APIs reached by the same property. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage from reachable property references with at least one syntactically used generated input, and state coverage from operation-sequence evidence; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
 
 Effect evidence is also normalized. Adapters own language-specific classification of effectful dependencies, frameworks, and framework types, but they emit the matched values as `effectfulImports` and `effectfulIdentifiers`. The evaluator derives booleans from those structured lists. Do not add adapter-emitted `hasEffectful...` booleans.
 
@@ -237,11 +255,11 @@ Shared mutable state evidence follows the same shape. Adapters own language-spec
 
 Interface and value logic evidence is normalized too. Adapters emit `interfaceLogicEvidence` lists naming the declarations or syntax classes that caused the evidence, such as `functionBodies`, `derivedValueBodies`, `controlFlow`, or `imperativeDeclarations`; the evaluator derives the corresponding `has...` checks from whether those lists are empty. Do not add adapter-emitted `hasFunctionBodies`-style booleans.
 
-Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `constructorBodies`, and `derivedValueBodies` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `propertyChecks[].generatedInputs[].uses` entry must also appear in `apiReferences`, because generated-input uses describe reachable call-site evidence for a specific generated value. Every `propertyChecks[].operationSequences[].operations` and `propertyChecks[].operationSequences[].assertions` entry must also appear in `apiReferences`, because operation sequences describe reachable call-site evidence for a generated trace. Every operation sequence must refer to a generated input emitted by the same property check. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`.
+Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `constructorBodies`, and `derivedValueBodies` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `propertyChecks[].operationSequences[].operations` and `propertyChecks[].operationSequences[].assertions` entry must also appear in `apiReferences`, because operation sequences describe reachable call-site evidence for a generated trace. Every operation sequence must refer to a generated input emitted by the same property check. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`.
 
 Fact emission should also avoid stringly typed shortcuts. Adapters should report structural evidence from language parsers or dependency APIs: declarations, imports, member accesses, property-wrapper attributes, call expressions, exported APIs, and generated-input shapes. They should not infer facts from filename prose, comments, test names, or suffixes when the language ecosystem exposes a stronger structural signal. Adapters also should not emit policy violation text; they emit facts, and the shared evaluator owns rule messages.
 
-Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies and backed by generated-input use, not to example tests or unrelated helper functions that merely live in the same source file. A repeated constant property such as a unit generator with `fun ()` or `_ in` may still be a useful regression assertion, but it does not satisfy generated property coverage. Operation-sequence evidence is tied to generated trace inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements, Go `if`/`switch`/loop/select statements, and OCaml `if`/`match`/loop expressions. Shared-state evidence is emitted from language AST nodes such as Swift actor stored `var` members, Go sync types, or OCaml top-level state allocations and mutable fields, not from source-text substring scans.
+Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies and a syntactically used generated input, not to example tests or unrelated helper functions that merely live in the same source file. A repeated constant property such as a unit generator with `fun ()` or `_ in` may still be a useful regression assertion, but it does not satisfy generated property coverage. Operation-sequence evidence is tied to generated trace inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements, Go `if`/`switch`/loop/select statements, and OCaml `if`/`match`/loop expressions. Shared-state evidence is emitted from language AST nodes such as Swift actor stored `var` members, Go sync types, or OCaml top-level state allocations and mutable fields, not from source-text substring scans.
 
 The fact schema is intentionally strict:
 

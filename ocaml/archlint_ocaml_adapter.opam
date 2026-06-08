@@ -1,0 +1,22 @@
+opam-version: "2.0"
+synopsis: "Archlint OCaml fact adapter"
+description: """
+Parses OCaml source with compiler-libs and emits architecture facts as JSON
+for the shared archlint evaluator. This package exists so the adapter owns its
+own toolchain dependencies and can be built in a self-contained local opam
+switch (ocaml/_opam) without borrowing a switch from a sibling repository.
+"""
+maintainer: "archlint"
+authors: "archlint"
+homepage: "https://github.com/flowglad/archlint"
+bug-reports: "https://github.com/flowglad/archlint/issues"
+depends: [
+  # The adapter walks the located Longident representation (Ldot of _ loc * _ loc)
+  # introduced in the OCaml 5.3 parsetree, so it does not build on older compilers.
+  "ocaml" {>= "5.3.0"}
+  "dune" {>= "3.21" & build}
+  "yojson"
+]
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]

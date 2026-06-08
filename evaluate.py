@@ -124,11 +124,12 @@ class SourceFile:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", default=".")
-    parser.add_argument("--adapter", action="append", choices=["go", "swift", "ocaml"], default=[])
+    parser.add_argument("--adapter", action="append", choices=["go", "swift", "ocaml", "typescript"], default=[])
     parser.add_argument("--go-module")
     parser.add_argument("--go-packages")
     parser.add_argument("--swift-xcodegen")
     parser.add_argument("--ocaml-root")
+    parser.add_argument("--typescript-root")
     parser.add_argument("facts", nargs="?", default="-")
     args = parser.parse_args()
 
@@ -141,6 +142,7 @@ def main() -> int:
                 go_packages=args.go_packages,
                 swift_xcodegen=args.swift_xcodegen,
                 ocaml_root=args.ocaml_root,
+                typescript_root=args.typescript_root,
             )
         else:
             source = sys.stdin.read() if args.facts == "-" else open(args.facts, encoding="utf-8").read()
@@ -162,11 +164,22 @@ def evaluate_adapters(
     go_packages: str | None,
     swift_xcodegen: str | None,
     ocaml_root: str | None,
+    typescript_root: str | None = None,
 ) -> list[Violation]:
     violations: list[Violation] = []
     for adapter in adapters:
         violations.extend(
-            evaluate(run_adapter(repo_root, adapter, go_module, go_packages, swift_xcodegen, ocaml_root))
+            evaluate(
+                run_adapter(
+                    repo_root,
+                    adapter,
+                    go_module,
+                    go_packages,
+                    swift_xcodegen,
+                    ocaml_root,
+                    typescript_root,
+                )
+            )
         )
     return violations
 
@@ -178,6 +191,7 @@ def run_adapter(
     go_packages: str | None,
     swift_xcodegen: str | None,
     ocaml_root: str | None,
+    typescript_root: str | None = None,
 ) -> list[SourceFile]:
     tool_root = Path(__file__).resolve().parent
     if adapter == "go":
@@ -225,6 +239,21 @@ def run_adapter(
         ]
         if ocaml_root is not None:
             command.extend(["--ocaml-root", ocaml_root])
+        cwd = tool_root
+    elif adapter == "typescript":
+        command = [
+            "npm",
+            "--prefix",
+            str(tool_root / "typescript"),
+            "run",
+            "--silent",
+            "archlint",
+            "--",
+            "--repo-root",
+            str(repo_root),
+        ]
+        if typescript_root is not None:
+            command.extend(["--typescript-root", typescript_root])
         cwd = tool_root
     else:
         raise ValueError(f"unknown adapter {adapter}")
@@ -397,21 +426,6 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
                     source_file.path,
                     "property test references must be reachable API references: "
                     + ", ".join(references_outside_property),
-                )
-            )
-        generated_input_uses = set().union(
-            *(generated_input.uses for check in source_file.property_checks for generated_input in check.generated_inputs),
-            set(),
-        )
-        generated_input_uses_outside_api_references = sorted(
-            generated_input_uses - source_file.api_references
-        )
-        if generated_input_uses_outside_api_references:
-            violations.append(
-                Violation(
-                    source_file.path,
-                    "property generated input uses must be reachable API references: "
-                    + ", ".join(generated_input_uses_outside_api_references),
                 )
             )
         generated_input_names = {

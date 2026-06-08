@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# OCaml adapter: dune build output + self-contained local opam switch
+ocaml/_build/
+ocaml/_opam/
+_build/
+
+# Swift adapter build output
+swift/.build/
+
+# TypeScript adapter dependencies
+typescript/node_modules/

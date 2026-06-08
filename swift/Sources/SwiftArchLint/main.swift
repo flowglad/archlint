@@ -505,7 +505,7 @@ final class ArchitectureVisitor: SyntaxVisitor {
         references: Array(Set(expandedReferences)).sorted(),
         generatedInputs: generatedInputs,
         operationSequences: hasOperationSequenceGenerator
-          ? operationSequences(from: generatedInputs, assertions: expandedReferences)
+          ? operationSequences(for: node, from: generatedInputs, assertions: expandedReferences)
           : []
       )
     )
@@ -683,14 +683,13 @@ final class ArchitectureVisitor: SyntaxVisitor {
       }
       return GeneratedInputFact(
         name: name,
-        uses: Array(
-          Set(expandedAPIReferences(from: visitor.uses, visited: []))
-        ).sorted()
+        uses: visitor.found ? [name] : []
       )
     }
   }
 
   private func operationSequences(
+    for node: FunctionCallExprSyntax,
     from generatedInputs: [GeneratedInputFact],
     assertions: [String]
   ) -> [OperationSequenceFact] {
@@ -698,9 +697,25 @@ final class ArchitectureVisitor: SyntaxVisitor {
       if input.uses.isEmpty {
         return nil
       }
+      let visitor: GeneratedInputAPIUseVisitor = GeneratedInputAPIUseVisitor(
+        inputName: input.name,
+        viewMode: .sourceAccurate
+      )
+      if let trailingClosure: ClosureExprSyntax = node.trailingClosure {
+        visitor.walk(trailingClosure)
+      }
+      for argument: LabeledExprSyntax in node.arguments {
+        if let closure: ClosureExprSyntax = argument.expression.as(ClosureExprSyntax.self) {
+          visitor.walk(closure)
+        }
+      }
+      let operations = Array(Set(expandedAPIReferences(from: visitor.uses, visited: []))).sorted()
+      if operations.isEmpty {
+        return nil
+      }
       return OperationSequenceFact(
         input: input.name,
-        operations: input.uses,
+        operations: operations,
         assertions: Array(Set(assertions)).sorted()
       )
     }
@@ -862,6 +877,24 @@ final class APIReferenceVisitor: SyntaxVisitor {
 }
 
 final class GeneratedInputUseVisitor: SyntaxVisitor {
+  let inputName: String
+  private(set) var found: Bool = false
+
+  init(inputName: String, viewMode: SyntaxTreeViewMode) {
+    self.inputName = inputName
+    super.init(viewMode: viewMode)
+  }
+
+  override func visit(_ node: DeclReferenceExprSyntax) -> SyntaxVisitorContinueKind {
+    if node.baseName.text == inputName {
+      found = true
+      return .skipChildren
+    }
+    return .visitChildren
+  }
+}
+
+final class GeneratedInputAPIUseVisitor: SyntaxVisitor {
   let inputName: String
   private(set) var uses: [String] = []
 
