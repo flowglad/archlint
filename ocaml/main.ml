@@ -58,6 +58,13 @@ type interface_exports = {
   exported_references : StringSet.t;
 }
 
+type typedtree_artifact = {
+  artifact_path : string;
+  source_path : string;
+  load_path_visible : string list;
+  load_path_hidden : string list;
+}
+
 type facts = {
   mutable imports : StringSet.t;
   mutable identifiers : StringSet.t;
@@ -142,6 +149,9 @@ let sorted_unique values =
 let basename_without_extension path =
   let base = Filename.basename path in
   try Filename.chop_extension base with Invalid_argument _ -> base
+
+let absolute_path path =
+  if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
 
 let module_name_of_path path =
   basename_without_extension path
@@ -848,7 +858,7 @@ let shared_state_facts facts =
 let effectful_import_list imports =
   imports |> List.filter (fun import -> StringSet.mem import effectful_imports)
 
-let source_fact ~root:_ ~interfaces ~test_scope_paths path =
+let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts:_ path =
   let source = read_file path in
   let metadata = parse_metadata source in
   let facts =
@@ -909,6 +919,124 @@ let rec collect_ocaml_files dir =
          else if Filename.check_suffix name ".ml" || Filename.check_suffix name ".mli"
          then [ path ]
          else [])
+
+let rec collect_artifact_files dir =
+  let entries =
+    try Sys.readdir dir |> Array.to_list |> List.sort String.compare with Sys_error _ -> []
+  in
+  List.concat_map
+    (fun name ->
+      let path = Filename.concat dir name in
+      if (try Sys.is_directory path with Sys_error _ -> false) then collect_artifact_files path
+      else if Filename.check_suffix name ".cmt" || Filename.check_suffix name ".cmti" then [ path ]
+      else [])
+    entries
+
+let shell_quote value = Filename.quote value
+
+let run_dune_build source_root =
+  let command =
+    Printf.sprintf "cd %s && OCAMLPARAM='_,bin-annot=1' dune build @all" (shell_quote source_root)
+  in
+  match Sys.command command with
+  | 0 -> ()
+  | status ->
+      failwith
+        (Printf.sprintf "failed to build OCaml project at %s with dune (exit %d)" source_root
+           status)
+
+let resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt =
+  match cmt.Cmt_format.cmt_sourcefile with
+  | None -> None
+  | Some path ->
+      let candidates =
+        if Filename.is_relative path then
+          [
+            Filename.concat cmt.Cmt_format.cmt_builddir path;
+            Filename.concat source_root path;
+            path;
+          ]
+        else [ path ]
+      in
+      match
+        List.find_map
+          (fun candidate ->
+            let candidate = absolute_path candidate in
+            if Sys.file_exists candidate then Some candidate else None)
+          candidates
+      with
+      | Some candidate -> Some candidate
+      | None -> (
+          match StringMap.find_opt (Filename.basename path) source_paths_by_basename with
+          | Some [ source_path ] -> Some source_path
+          | _ -> None)
+
+let load_typedtree_artifacts ~source_root source_paths =
+  run_dune_build source_root;
+  let source_paths =
+    source_paths |> List.map absolute_path |> List.sort_uniq String.compare
+  in
+  let source_paths_by_basename =
+    List.fold_left
+      (fun acc source_path ->
+        let key = Filename.basename source_path in
+        let existing = Option.value (StringMap.find_opt key acc) ~default:[] in
+        StringMap.add key (source_path :: existing) acc)
+      StringMap.empty source_paths
+  in
+  let artifact_root = Filename.concat source_root "_build" in
+  let artifact_paths = collect_artifact_files artifact_root in
+  let visible_dirs =
+    artifact_paths
+    |> List.map Filename.dirname
+    |> List.fold_left add StringSet.empty
+    |> set_to_list
+  in
+  Load_path.init ~auto_include:Load_path.no_auto_include ~visible:visible_dirs ~hidden:[];
+  let artifacts =
+    artifact_paths
+    |> List.filter_map (fun artifact_path ->
+           let cmt = Cmt_format.read_cmt artifact_path in
+           match resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt with
+           | None -> None
+           | Some source_path ->
+               Some
+                 {
+                   artifact_path;
+                   source_path;
+                   load_path_visible = cmt.Cmt_format.cmt_loadpath.visible;
+                   load_path_hidden = cmt.Cmt_format.cmt_loadpath.hidden;
+                 })
+  in
+  let visible_from_cmts =
+    artifacts
+    |> List.concat_map (fun artifact -> artifact.load_path_visible)
+    |> List.fold_left add StringSet.empty
+    |> set_to_list
+  in
+  let hidden_from_cmts =
+    artifacts
+    |> List.concat_map (fun artifact -> artifact.load_path_hidden)
+    |> List.fold_left add StringSet.empty
+    |> set_to_list
+  in
+  Load_path.init ~auto_include:Load_path.no_auto_include
+    ~visible:(sorted_unique (visible_dirs @ visible_from_cmts))
+    ~hidden:hidden_from_cmts;
+  let artifacts_by_source =
+    List.fold_left
+      (fun acc artifact -> StringMap.add artifact.source_path artifact acc)
+      StringMap.empty artifacts
+  in
+  let missing =
+    source_paths
+    |> List.map absolute_path
+    |> List.filter (fun path -> not (StringMap.mem path artifacts_by_source))
+  in
+  if missing <> [] then
+    failwith
+      (Printf.sprintf "missing typedtree artifacts for: %s" (String.concat ", " missing));
+  artifacts_by_source
 
 (* Minimal S-expression reader, just enough to find dune stanzas. dune files
    are S-expressions; we tolerate comments and strings and ignore everything we
@@ -1061,6 +1189,7 @@ let () =
     else !ocaml_root
   in
   let paths = collect_ocaml_files source_root in
+  let typedtree_artifacts = load_typedtree_artifacts ~source_root paths in
   let test_scope_paths = StringSet.of_list (collect_test_scope_paths source_root) in
   let interfaces =
     List.fold_left
@@ -1070,7 +1199,9 @@ let () =
         else acc)
       StringMap.empty paths
   in
-  let files = paths |> List.map (source_fact ~root ~interfaces ~test_scope_paths) in
+  let files =
+    paths |> List.map (source_fact ~root ~interfaces ~test_scope_paths ~typedtree_artifacts)
+  in
   let json = `Assoc [ ("files", `List (List.map file_fact_to_json files)) ] in
   Yojson.Safe.pretty_to_channel stdout json;
   output_char stdout '\n'
