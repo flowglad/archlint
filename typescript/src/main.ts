@@ -81,6 +81,12 @@ type ParsedFile = {
   facts: Facts;
 };
 
+type ProgramContext = {
+  program: ts.Program;
+  checker: ts.TypeChecker;
+  ownedSourceFiles: Set<string>;
+};
+
 const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts"]);
 const ignoredDirectories = new Set(["node_modules", "dist", "build", "coverage", ".git"]);
 
@@ -121,14 +127,21 @@ const propertyNames = new Set(["property", "asyncProperty"]);
 const operationGeneratorNames = new Set(["array", "uniqueArray"]);
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const repoRoot = path.resolve(args.get("--repo-root") ?? ".");
-  const root = path.resolve(repoRoot, args.get("--typescript-root") ?? ".");
-  const files = sourceFiles(root);
-  const parsedFiles = files.map(parseSourceFacts);
-  const globalFunctionReferences = uniqueGlobalFunctionReferences(parsedFiles);
-  const facts = parsedFiles.map((file) => sourceFact(file, globalFunctionReferences));
-  process.stdout.write(`${JSON.stringify({ files: facts })}\n`);
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    const repoRoot = path.resolve(args.get("--repo-root") ?? ".");
+    const root = path.resolve(repoRoot, args.get("--typescript-root") ?? ".");
+    const files = sourceFiles(root);
+    const programContext = buildProgram(files, root);
+    const parsedFiles = files.map((filePath) => parseSourceFacts(filePath, programContext));
+    const globalFunctionReferences = uniqueGlobalFunctionReferences(parsedFiles);
+    const facts = parsedFiles.map((file) => sourceFact(file, globalFunctionReferences, programContext));
+    process.stdout.write(`${JSON.stringify({ files: facts })}\n`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`typescript adapter failed: ${message}\n`);
+    process.exitCode = 1;
+  }
 }
 
 function parseArgs(args: string[]): Map<string, string> {
@@ -167,9 +180,104 @@ function sourceFiles(root: string): string[] {
   return files.sort();
 }
 
-function parseSourceFacts(filePath: string): ParsedFile {
+function buildProgram(filePaths: string[], root: string): ProgramContext {
+  const configPath = ts.findConfigFile(root, ts.sys.fileExists);
+  const parsedConfig = configPath === undefined ? defaultCompilerConfig(filePaths) : compilerConfigFromTsconfig(configPath);
+  const rootNames = sorted(new Set([...parsedConfig.fileNames, ...filePaths])).map((filePath) => path.resolve(filePath));
+  const program = ts.createProgram({
+    rootNames,
+    options: parsedConfig.options,
+  });
+  const diagnostics = relevantProgramDiagnostics(program, root, new Set(filePaths.map(normalizePath)));
+  if (diagnostics.length > 0) {
+    throw new Error(formatDiagnostics(diagnostics));
+  }
+  return {
+    program,
+    checker: program.getTypeChecker(),
+    ownedSourceFiles: new Set(filePaths.map(normalizePath)),
+  };
+}
+
+function defaultCompilerConfig(filePaths: string[]): ts.ParsedCommandLine {
+  return {
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      skipLibCheck: true,
+      esModuleInterop: true,
+    },
+    fileNames: filePaths,
+    errors: [],
+  };
+}
+
+function compilerConfigFromTsconfig(configPath: string): ts.ParsedCommandLine {
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error !== undefined) {
+    throw new Error(formatDiagnostics([config.error]));
+  }
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configPath));
+  if (parsed.errors.length > 0) {
+    throw new Error(formatDiagnostics(parsed.errors));
+  }
+  return parsed;
+}
+
+function relevantProgramDiagnostics(program: ts.Program, root: string, ownedSourceFiles: Set<string>): ts.Diagnostic[] {
+  return ts.getPreEmitDiagnostics(program).filter((diagnostic) => {
+    if (diagnostic.code === 2307 && diagnostic.file !== undefined) {
+      return unresolvedLocalModuleDiagnostic(diagnostic, root, ownedSourceFiles);
+    }
+    return diagnostic.category === ts.DiagnosticCategory.Error && diagnostic.file === undefined;
+  });
+}
+
+function unresolvedLocalModuleDiagnostic(diagnostic: ts.Diagnostic, root: string, ownedSourceFiles: Set<string>): boolean {
+  const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+  const match = message.match(/Cannot find module '([^']+)'/u);
+  if (match === null) {
+    return true;
+  }
+  const specifier = match[1];
+  if (specifier === undefined || !specifier.startsWith(".")) {
+    return false;
+  }
+  const containingFile = diagnostic.file;
+  if (containingFile === undefined) {
+    return true;
+  }
+  const resolved = resolveLocalModuleSpecifier(path.dirname(containingFile.fileName), specifier);
+  return resolved === undefined || !ownedSourceFiles.has(normalizePath(resolved)) || !normalizePath(resolved).startsWith(normalizePath(root));
+}
+
+function resolveLocalModuleSpecifier(baseDirectory: string, specifier: string): string | undefined {
+  const withoutExtension = stripModuleExtension(path.resolve(baseDirectory, specifier));
+  const candidates = [
+    path.resolve(baseDirectory, specifier),
+    ...[...sourceExtensions.values()].map((extension) => `${withoutExtension}${extension}`),
+    ...[...sourceExtensions.values()].map((extension) => path.join(path.resolve(baseDirectory, specifier), `index${extension}`)),
+  ];
+  return candidates.find((candidate) => ts.sys.fileExists(candidate));
+}
+
+function formatDiagnostics(diagnostics: ts.Diagnostic[]): string {
+  const host: ts.FormatDiagnosticsHost = {
+    getCanonicalFileName: (fileName) => fileName,
+    getCurrentDirectory: () => process.cwd(),
+    getNewLine: () => "\n",
+  };
+  return ts.formatDiagnosticsWithColorAndContext(diagnostics, host);
+}
+
+function parseSourceFacts(filePath: string, programContext: ProgramContext): ParsedFile {
   const source = readFileSync(filePath, "utf8");
-  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+  const sourceFile = programContext.program.getSourceFile(filePath);
+  if (sourceFile === undefined) {
+    throw new Error(`program did not include ${filePath}`);
+  }
   const facts = emptyFacts();
   collectTopLevel(facts, sourceFile);
   return { filePath, source, sourceFile, facts };
@@ -193,7 +301,7 @@ function moduleNameFromPath(filePath: string): string {
   return baseName === "" ? "" : `${baseName[0]?.toUpperCase() ?? ""}${baseName.slice(1)}`;
 }
 
-function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<string>>): SourceFact {
+function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<string>>, programContext: ProgramContext): SourceFact {
   const { filePath, source, sourceFile, facts } = file;
   for (const [name, references] of globalFunctionReferences) {
     if (!facts.functionReferences.has(name)) {
@@ -201,6 +309,7 @@ function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<
     }
   }
   collectNodeFacts(facts, sourceFile);
+  collectQualifiedReferences(facts, sourceFile, programContext);
   const metadata = parseMetadata(source);
   if (metadata.moduleType !== "stateTest") {
     for (const check of facts.propertyChecks) {
@@ -226,6 +335,99 @@ function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<
     propertyChecks: facts.propertyChecks,
     interfaceLogicEvidence: facts.interfaceLogicEvidence,
   };
+}
+
+function collectQualifiedReferences(facts: Facts, sourceFile: ts.SourceFile, programContext: ProgramContext): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && isReferenceIdentifier(node)) {
+      const reference = qualifiedReferenceForIdentifier(node, sourceFile, programContext);
+      if (reference !== undefined) {
+        facts.qualifiedReferences.add(reference);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
+function qualifiedReferenceForIdentifier(
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+  programContext: ProgramContext,
+): string | undefined {
+  const symbol = programContext.checker.getSymbolAtLocation(identifier);
+  if (symbol === undefined) {
+    return undefined;
+  }
+  const resolved = (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? programContext.checker.getAliasedSymbol(symbol) : symbol;
+  const declaration = resolved.valueDeclaration ?? resolved.declarations?.[0];
+  if (declaration === undefined) {
+    return undefined;
+  }
+  const ownerFile = declaration.getSourceFile();
+  if (normalizePath(ownerFile.fileName) === normalizePath(sourceFile.fileName)) {
+    return undefined;
+  }
+  if (!programContext.ownedSourceFiles.has(normalizePath(ownerFile.fileName))) {
+    return undefined;
+  }
+  return `${moduleNameFromPath(ownerFile.fileName)}.${resolved.getName()}`;
+}
+
+function isReferenceIdentifier(identifier: ts.Identifier): boolean {
+  if (isDeclarationName(identifier)) {
+    return false;
+  }
+  const parent = identifier.parent;
+  if (parent === undefined) {
+    return true;
+  }
+  if (ts.isPropertyAccessExpression(parent) && parent.name === identifier) {
+    return true;
+  }
+  if (ts.isPropertyAssignment(parent) && parent.name === identifier) {
+    return false;
+  }
+  if (ts.isShorthandPropertyAssignment(parent) && parent.name === identifier) {
+    return true;
+  }
+  if (ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isImportEqualsDeclaration(parent)) {
+    return true;
+  }
+  if (ts.isExportSpecifier(parent) && parent.name === identifier) {
+    return true;
+  }
+  if (ts.isBindingElement(parent) && parent.propertyName === identifier) {
+    return false;
+  }
+  if (ts.isQualifiedName(parent) && parent.right === identifier) {
+    return true;
+  }
+  return true;
+}
+
+function isDeclarationName(identifier: ts.Identifier): boolean {
+  const parent = identifier.parent;
+  if (parent === undefined) {
+    return false;
+  }
+  if (
+    (ts.isFunctionDeclaration(parent)
+      || ts.isClassDeclaration(parent)
+      || ts.isInterfaceDeclaration(parent)
+      || ts.isTypeAliasDeclaration(parent)
+      || ts.isEnumDeclaration(parent)
+      || ts.isModuleDeclaration(parent)
+      || ts.isTypeParameterDeclaration(parent)
+      || ts.isParameter(parent)
+      || ts.isVariableDeclaration(parent)
+      || ts.isMethodDeclaration(parent)
+      || ts.isPropertyDeclaration(parent)
+      || ts.isEnumMember(parent)) && parent.name === identifier
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function uniqueGlobalFunctionReferences(files: ParsedFile[]): Map<string, Set<string>> {
@@ -757,6 +959,10 @@ function addUnique(values: string[], value: string): void {
 
 function sorted(values: Iterable<string>): string[] {
   return [...new Set(values)].filter((value) => value !== "").sort();
+}
+
+function normalizePath(filePath: string): string {
+  return path.resolve(filePath);
 }
 
 main();

@@ -40,6 +40,22 @@ export function run(): string {
 }
 TS
 
+cat > "$TMPDIR/src/consumer.ts" <<'TS'
+// @archlint.module exempt
+// @archlint.exempt-reason test-support
+
+import { run } from "./handler.js";
+
+function localRun(): string {
+  return "local";
+}
+
+export function consume(): string {
+  localRun();
+  return run();
+}
+TS
+
 cat > "$TMPDIR/tests/decision.test.mts" <<'TS'
 // @archlint.module test
 // @archlint.domain demo.decision
@@ -85,29 +101,19 @@ assert check["generatedInputs"] == [{"name": "value", "uses": ["value"]}], check
 handler = [item for item in document["files"] if item["path"].endswith("handler.ts")][0]
 assert "commander" in handler["effectfulImports"], handler
 assert "Command" in handler["effectfulIdentifiers"], handler
-# moduleName is the capitalized file basename; Patch 5 leaves
-# qualifiedReferences empty as a rule-15 no-op.
+# moduleName is the capitalized file basename and qualifiedReferences use the
+# same prefix for semantic cross-file references.
 assert handler["moduleName"] == "Handler", handler
-assert handler["qualifiedReferences"] == [], handler
+assert "Decision.decide" in handler["qualifiedReferences"], handler
+consumer = [item for item in document["files"] if item["path"].endswith("consumer.ts")][0]
+assert "Handler.run" in consumer["qualifiedReferences"], consumer
+assert "Consumer.localRun" not in consumer["qualifiedReferences"], consumer
 core = [item for item in document["files"] if item["path"].endswith("decision.ts")][0]
 assert core["moduleName"] == "Decision", core
 assert "decisionNode" in core["decisionSurface"], core
 assert "decisionNode" not in core["propertyTestSurface"], core
 assert "decide" in core["propertyTestSurface"], core
 PY
-
-# PENDING: Patch 6 fixture for semantic named-import resolution.
-# src/consumer.ts
-#   // @archlint.module core
-#   // @archlint.domain demo.pending
-#   import { run } from "./handler.js";
-#   export function consume(): string {
-#     return run();
-#   }
-#
-# Expected assertion once semantic resolution lands:
-#   consumer = [item for item in document["files"] if item["path"].endswith("consumer.ts")][0]
-#   assert "Handler.run" in consumer["qualifiedReferences"], consumer
 
 cat > "$TMPDIR/src/constant-only.ts" <<'TS'
 // @archlint.module core
