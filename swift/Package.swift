@@ -11,6 +11,7 @@ let package = Package(
     .executable(name: "SwiftArchLint", targets: ["SwiftArchLint"])
   ],
   dependencies: [
+    .package(url: "https://github.com/swiftlang/indexstore-db.git", branch: "main"),
     .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.0"),
     .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "603.0.1")
   ],
@@ -18,6 +19,7 @@ let package = Package(
     .executableTarget(
       name: "SwiftArchLint",
       dependencies: [
+        .product(name: "IndexStoreDB", package: "indexstore-db"),
         .product(name: "SwiftParser", package: "swift-syntax"),
         .product(name: "SwiftSyntax", package: "swift-syntax"),
         .product(name: "Yams", package: "Yams"),
