@@ -718,9 +718,10 @@ def evaluate_interface_modules(files: list[SourceFile]) -> list[Violation]:
 def evaluate_shell_modules(files: list[SourceFile]) -> list[Violation]:
     core_handler_references_by_domain: dict[str, set[str]] = {}
     for source_file in files:
-        if source_file.metadata.module_type == "core":
+        if source_file.metadata.module_type == "core" and source_file.module_name:
             core_handler_references_by_domain.setdefault(source_file.metadata.domain, set()).update(
-                source_file.decision_surface | source_file.decision_products
+                f"{source_file.module_name}.{reference}"
+                for reference in source_file.decision_surface | source_file.decision_products
             )
 
     violations: list[Violation] = []
@@ -728,7 +729,7 @@ def evaluate_shell_modules(files: list[SourceFile]) -> list[Violation]:
         if source_file.metadata.module_type != "shell":
             continue
         core_references = core_handler_references_by_domain.get(source_file.metadata.domain, set())
-        if not source_file.api_references.intersection(core_references):
+        if not source_file.qualified_references.intersection(core_references):
             violations.append(Violation(source_file.path, "shell module must reference a core API in the same @archlint.domain"))
     return violations
 

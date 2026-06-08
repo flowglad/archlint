@@ -672,12 +672,12 @@ import Foundation
 
 struct HTTPMailBackendClient {
   func add() -> URLRequest {
-    _ = HTTPMailBackendDecider.decide()
     return URLRequest(url: URL(string: "http://localhost")!)
   }
 }
 EOF
-assert_passes "$core_enum_case_matching_shell_method_fixture"
+assert_fails_with "$core_enum_case_matching_shell_method_fixture" \
+  "shell module must reference a core API in the same @archlint.domain"
 
 empty_decider_fixture="$(new_fixture empty-decider)"
 cat > "$empty_decider_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'

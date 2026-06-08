@@ -336,6 +336,7 @@ class EvaluateTests(unittest.TestCase):
             path="/repo/Handler.swift",
             metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=["CoreVocabulary"],
+            qualifiedReferences=["Core.CoreVocabulary"],
         )
 
         violations = evaluate.evaluate([core, shell])
@@ -359,12 +360,57 @@ class EvaluateTests(unittest.TestCase):
             path="/repo/Handler.swift",
             metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
             apiReferences=["SyncPlan"],
+            qualifiedReferences=["Core.SyncPlan"],
             identifiers=["EffectType"],
             effectfulIdentifiers=["EffectType"],
             decisionSurface=[],
             propertyTestSurface=[],
             decisionProducts=[],
             decisionReferences=[],
+        )
+        test = source_file(
+            path="/repo/CoreTests.swift",
+            testScope="CoreTests",
+            metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
+            apiReferences=["decideSync"],
+            propertyChecks=[property_check(["decideSync"])],
+            decisionSurface=[],
+            propertyTestSurface=[],
+            decisionProducts=[],
+            decisionReferences=[],
+        )
+
+        violations = evaluate.evaluate([core, shell, test])
+
+        self.assertEqual([], violations)
+
+    def test_shell_module_does_not_accept_same_named_bare_core_reference(self):
+        core = source_file(path="/repo/Core.swift")
+        shell = source_file(
+            path="/repo/Handler.swift",
+            metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
+            identifiers=["decideSync", "EffectType"],
+            apiReferences=["decideSync"],
+            qualifiedReferences=[],
+            effectfulIdentifiers=["EffectType"],
+        )
+
+        violations = evaluate.evaluate([core, shell])
+
+        self.assertIn(
+            "shell module must reference a core API in the same @archlint.domain",
+            [violation.message for violation in violations],
+        )
+
+    def test_shell_module_accepts_qualified_core_decision_reference(self):
+        core = source_file(path="/repo/Core.swift")
+        shell = source_file(
+            path="/repo/Handler.swift",
+            metadata={"moduleType": "shell", "domain": "mail.sync", "exemptReason": ""},
+            identifiers=["decideSync", "EffectType"],
+            apiReferences=["decideSync"],
+            qualifiedReferences=["Core.decideSync"],
+            effectfulIdentifiers=["EffectType"],
         )
         test = source_file(
             path="/repo/CoreTests.swift",
