@@ -67,9 +67,6 @@ type Facts = {
   decisionProducts: Set<string>;
   decisionReferences: Set<string>;
   qualifiedReferences: Set<string>;
-  // Maps a `import * as ns from "./mod"` alias to the resolved module name, so
-  // `ns.member` accesses can be recorded as qualified `mod.member` references.
-  namespaceAliases: Map<string, string>;
   effectfulIdentifiers: Set<string>;
   sharedState: Map<string, Set<string>>;
   propertyChecks: PropertyCheckFact[];
@@ -191,15 +188,9 @@ function stripModuleExtension(name: string): string {
   return name;
 }
 
-// The module identity used both for a file's own surface and as the qualifier a
-// namespace import resolves to, so the two compose: a `import * as r from
-// "./routing"` in one file and the `routing.ts` file itself both yield "routing".
 function moduleNameFromPath(filePath: string): string {
-  return stripModuleExtension(path.basename(filePath));
-}
-
-function moduleNameFromSpecifier(specifier: string): string {
-  return stripModuleExtension(path.basename(specifier));
+  const baseName = stripModuleExtension(path.basename(filePath));
+  return baseName === "" ? "" : `${baseName[0]?.toUpperCase() ?? ""}${baseName.slice(1)}`;
 }
 
 function sourceFact(file: ParsedFile, globalFunctionReferences: Map<string, Set<string>>): SourceFact {
@@ -265,7 +256,6 @@ function emptyFacts(): Facts {
     decisionProducts: new Set(),
     decisionReferences: new Set(),
     qualifiedReferences: new Set(),
-    namespaceAliases: new Map(),
     effectfulIdentifiers: new Set(),
     sharedState: new Map(),
     propertyChecks: [],
@@ -286,13 +276,6 @@ function collectTopLevel(facts: Facts, sourceFile: ts.SourceFile): void {
       const specifier = statement.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
         facts.imports.add(specifier.text);
-        const namedBindings = statement.importClause?.namedBindings;
-        if (namedBindings !== undefined && ts.isNamespaceImport(namedBindings)) {
-          // `import * as ns from "./mod"` — the alias unambiguously names the
-          // module's namespace, so `ns.member` is an attributable cross-module
-          // reference. Named/default imports used bare are not attributable.
-          facts.namespaceAliases.set(namedBindings.name.text, moduleNameFromSpecifier(specifier.text));
-        }
       }
       continue;
     }
@@ -410,13 +393,6 @@ function collectNodeFacts(facts: Facts, sourceFile: ts.SourceFile): void {
         }
         facts.propertyChecks.push(propertyCheck);
       }
-    }
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      facts.namespaceAliases.has(node.expression.text)
-    ) {
-      facts.qualifiedReferences.add(`${facts.namespaceAliases.get(node.expression.text) ?? ""}.${node.name.text}`);
     }
     if (ts.isNewExpression(node)) {
       recordCallableReference(facts.apiReferences, node.expression);
