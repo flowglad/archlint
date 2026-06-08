@@ -1,0 +1,706 @@
+{
+  "projectName": "semantic-reference-resolution",
+  "owner": "flowglad",
+  "repo": "archlint",
+  "specFile": null,
+  "workstream": null,
+  "problemStatement": "archlint's adapters emit reference facts by syntactic extraction, so qualifiedReferences is incomplete by construction: a symbol used bare after open/import (or within the same module or package) cannot be attributed to its defining module and is omitted. Rule 15 (dependency direction) consumes qualifiedReferences, so for every adapter that emits an incomplete set the prohibition silently under-fires (false negatives). Today only OCaml emits qualifiedReferences at all; Go's in-flight emission is syntactic, and the TypeScript and Swift adapters do not emit the now-required moduleName/qualifiedReferences fields, so their fact documents cannot even pass the schema.",
+  "solutionSummary": "Upgrade all four adapters to resolve identifiers semantically to their defining module/symbol and emit them as '<ownerModuleName>.<symbol>'. Go gains go/types type info (info.Uses) over its already-loaded packages; TypeScript gains a ts.Program + TypeChecker with real module resolution; OCaml consumes the Typedtree (.cmt) instead of the raw Parsetree; Swift consumes SourceKit/index semantic data. Each adapter is an independent track of an INFRA patch (wire in the semantic machinery or the empty-field schema conformance, a rule-15 no-op) followed by a BEHAVIOR patch (populate qualifiedReferences semantically). A final patch repoints the shell-to-core linkage rule onto qualifiedReferences. evaluate.py's rule 15 and fact.schema.json are unchanged baseline and already consume the qualified contract. The cross-cutting invariant every adapter must honour is prefix consistency: the qualifier written into a referrer's qualifiedReferences for a symbol must equal the moduleName that same adapter assigns to that symbol's owner.",
+  "currentStateAnalysis": "Baseline (assuming the uncommitted working-tree changes land): fact.schema.json requires moduleName and qualifiedReferences on every source file; evaluate.py's evaluate_dependency_direction builds an implementation surface as {module_name}.{decision_reference} over shell/state/exempt files and intersects it with each core/value file's qualified_references. OCaml emits moduleName (capitalised basename) and syntactic qualifiedReferences (multi-part longidents only) via record_longident. Go emits moduleName (package name) and syntactic qualifiedReferences (selector exprs whose base is an imported package name) and loads packages with NeedName|NeedFiles|NeedCompiledGoFiles|NeedImports|NeedSyntax (no NeedTypes). TypeScript parses each file standalone with ts.createSourceFile and emits neither field. Swift parses with SwiftSyntax and emits neither field. Positive rules (shell linkage, core coverage, state coverage) still match bare apiReferences. Target: all four adapters emit semantically-resolved qualifiedReferences so rule 15 is effective everywhere, TypeScript/Swift become schema-conformant, and the shell-to-core linkage rule is repointed at qualifiedReferences (Patch 9). Core property-test coverage and state coverage stay on bare apiReferences because their evidence (propertyChecks references and operation sequences) is emitted bare and is not made qualified by this gameplan.",
+  "operationalConsiderations": {
+    "externalSystemAccess": "No network services, object storage, DBs, or secret stores are added. The new dependency is on each language's type-checker / build toolchain being available wherever the adapter runs (local `just test` and the composite GitHub Action in action.yml). Go's BEHAVIOR patch (Patch 2) adds NeedTypes|NeedTypesInfo (and NeedDeps) to packages.Load, which requires the consumer module's dependencies to be resolvable (go.mod, module cache); the Go adapter already invokes packages.Load, so this is a mode escalation, not new access. TypeScript's Patch 6 needs ts.createProgram to resolve tsconfig + node_modules. OCaml's Patch 4 needs the consumer's compiled .cmt artifacts and load path (Patch 3 owns making dune emit bin_annot and discovering the build dir). Swift's Patch 8 needs SourceKit/index data (Patch 7 owns the toolchain wiring). Each adapter's BEHAVIOR patch owns bringing its toolchain capability online; the just setup recipes and action.yml install steps are the provisioning surface.",
+    "crossRuntimeContracts": "The fact JSON document (fact.schema.json) is the contract between the adapters (producers) and evaluate.py (consumer). This gameplan changes the *content* of qualifiedReferences (incomplete-syntactic to complete-semantic) but not the schema shape — moduleName and qualifiedReferences already exist in the baseline schema and evaluate.py already consumes them for rule 15, so the consumer needs no change. The format contract every producer must preserve is '<ownerModuleName>.<symbol>', where the prefix equals the owner file's own moduleName as that same adapter computes it (package name for Go; capitalised basename for OCaml/TypeScript/Swift). Producer and consumer both live in this repo; the consumer is unchanged, so there is no producer-ships-consumer-breaks skew.",
+    "failureBehavior": "Semantic resolution introduces new failure modes per adapter: Go packages.Load type errors / unresolved deps; TypeScript program creation failures or unresolved tsconfig/modules; OCaml missing or stale .cmt artifacts and load-path gaps; Swift SourceKit crashes or absent index. The adapters already surface load/parse errors as violations on stderr and exit 1 (Go's loadGoPackages collects package errors; the others abort the fixture run). The decision this gameplan commits to is fail-closed: when semantic information is unavailable the adapter must error rather than silently emit an empty/partial qualifiedReferences set, because a silent partial set would make rule 15 under-fire — reintroducing the exact false-negative hole this gameplan closes. Each BEHAVIOR patch must emit a violation (non-zero exit) when resolution cannot complete, not degrade quietly to syntactic output.",
+    "concurrencyAndIdempotency": "`just test` fans the four adapter suites out concurrently, but each adapter is a separate process that reads source and writes a fact document to stdout — a pure function of its inputs, idempotent across re-runs, with no shared mutable state between adapters. The new build/index artifacts (Go module cache, TypeScript program, OCaml _build with .cmt, Swift .build index) live in per-language directories and are not shared across suites, so parallel runs do not race. No new code path is entered under retry or concurrent write to a shared resource.",
+    "rollbackStrategy": "No persistent state, schema migration, or external mutation is introduced — the adapters are pure CLIs and the only artifacts are regenerable build caches (_build, .build, node_modules, the Go build cache). Reverting any adapter's BEHAVIOR patch reverts its qualifiedReferences to the prior (syntactic for Go/OCaml, empty for TypeScript/Swift) set, which only relaxes rule 15 for that adapter; reverting an INFRA patch removes the field/toolchain wiring. Because each track is independent and additive, a revert strands no data and leaves the other adapters unaffected."
+  },
+  "mergabilityStrategy": {
+    "featureFlagStrategy": "No feature flag. The adapters have no flag infrastructure, and gating is structural instead: each adapter's INFRA patch is a provable rule-15 no-op (Go/OCaml: semantic machinery wired in but emitted facts unchanged; TypeScript/Swift: moduleName plus an empty qualifiedReferences array), and each adapter's BEHAVIOR patch activates semantic resolution only for that adapter's own facts. qualifiedReferences and module_name are consumed solely by rule 15, so an empty/unchanged set cannot alter any other rule. Every patch is therefore independently mergeable.",
+    "featureFlags": [],
+    "patchOrderingStrategy": "Four independent per-adapter tracks, each ordered INFRA (early) then BEHAVIOR (late); the tracks have no cross-dependencies and run in parallel. Within a track the BEHAVIOR patch depends only on its own INFRA patch."
+  },
+  "requiredChanges": [
+    {
+      "file": "go/main.go",
+      "line": 186,
+      "description": "Add NeedTypes|NeedTypesInfo (and NeedDeps) to the packages.Config mode so loaded packages carry types.Info.",
+      "signature": "Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps"
+    },
+    {
+      "file": "go/main.go",
+      "line": 224,
+      "description": "Compute file facts from each loaded package's syntax tree + TypesInfo (keyed by file path) instead of a standalone parser.ParseFile, so identifiers can be resolved.",
+      "signature": "func goArchitectureFileFactFromPackage(pkg *packages.Package, file *ast.File, path string) (architectureFileFact, []violation)"
+    },
+    {
+      "file": "go/main.go",
+      "line": 322,
+      "description": "Replace syntactic goQualifiedReferences with a semantic resolver: walk idents, look up info.Uses[ident] -> types.Object, and emit obj.Pkg().Name()+\".\"+obj.Name() for cross-package references (skip same-package and local objects).",
+      "signature": "func goSemanticQualifiedReferences(file *ast.File, info *types.Info, selfPkg *types.Package) map[string]struct{}"
+    },
+    {
+      "file": "go/main_test.go",
+      "line": 191,
+      "description": "Add a semantic test covering a bare/dot-imported use that resolves to a foreign package; keep TestGoModuleNameAndQualifiedReferences green.",
+      "signature": null
+    },
+    {
+      "file": "ocaml/dune",
+      "line": 1,
+      "description": "Emit binary annotations (.cmt/.cmti) for the adapter and configure consumption of the consumer project's Typedtree.",
+      "signature": "(executable (name main) (libraries compiler-libs.common yojson) (flags (:standard -bin-annot)))"
+    },
+    {
+      "file": "ocaml/main.ml",
+      "line": 271,
+      "description": "Resolve references from the Typedtree (Path.t / Env) to their defining module instead of recording multi-part longidents syntactically, populating qualified_references with open'd/bare uses included.",
+      "signature": "val record_typedtree_reference : facts -> Typedtree.expression -> unit"
+    },
+    {
+      "file": "typescript/src/main.ts",
+      "line": 47,
+      "description": "Add moduleName and qualifiedReferences to SourceFact and the internal Facts type.",
+      "signature": "moduleName: string; qualifiedReferences: string[];"
+    },
+    {
+      "file": "typescript/src/main.ts",
+      "line": 167,
+      "description": "Replace per-file ts.createSourceFile with a shared ts.Program + TypeChecker; resolve each reference's symbol to its declaring source file and emit '<Module>.<symbol>'.",
+      "signature": "function buildProgram(filePaths: string[]): { program: ts.Program; checker: ts.TypeChecker }"
+    },
+    {
+      "file": "swift/Sources/SwiftArchLint/main.swift",
+      "line": 110,
+      "description": "Add moduleName and qualifiedReferences to SourceFact (and the file-info struct).",
+      "signature": "let moduleName: String; let qualifiedReferences: [String]"
+    },
+    {
+      "file": "swift/Sources/SwiftArchLint/main.swift",
+      "line": 285,
+      "description": "Resolve references via SourceKit/index semantic data to their declaring file and emit '<Module>.<symbol>'.",
+      "signature": "static func semanticQualifiedReferences(for fileInfo: SwiftFileInfo, index: SemanticIndex) -> [String]"
+    }
+  ],
+  "functionalChanges": [
+    {
+      "id": "FC-1",
+      "description": "The Go adapter loads go/types type information for the packages it analyses (packages.Load runs with NeedTypes|NeedTypesInfo) without changing emitted facts.",
+      "ownedBy": 1
+    },
+    {
+      "id": "FC-2",
+      "description": "The Go adapter's qualifiedReferences resolve cross-package and bare/dot-imported uses to their defining package via info.Uses, emitted as '<package>.<Symbol>', so rule 15 fires for a genuine Go cross-module reach and ignores same-package locals and incidental bare names.",
+      "ownedBy": 2
+    },
+    {
+      "id": "FC-3",
+      "description": "The OCaml adapter's qualifiedReferences are resolved from the Typedtree, attributing uses written bare after open (or via the same package) to their true owning module rather than omitting them.",
+      "ownedBy": 4
+    },
+    {
+      "id": "FC-4",
+      "description": "The TypeScript adapter emits moduleName and a qualifiedReferences array, making its fact document schema-conformant (qualifiedReferences initially empty; rule-15 no-op).",
+      "ownedBy": 5
+    },
+    {
+      "id": "FC-5",
+      "description": "The TypeScript adapter populates qualifiedReferences by resolving each reference's symbol (via a ts.Program TypeChecker) to its declaring module, emitted as '<Module>.<symbol>', so rule 15 fires for a genuine TypeScript cross-module reach including named-import bare uses.",
+      "ownedBy": 6
+    },
+    {
+      "id": "FC-6",
+      "description": "The Swift adapter emits moduleName and a qualifiedReferences array, making its fact document schema-conformant (qualifiedReferences initially empty; rule-15 no-op).",
+      "ownedBy": 7
+    },
+    {
+      "id": "FC-7",
+      "description": "The Swift adapter populates qualifiedReferences by resolving references via SourceKit/index semantic data to their declaring file, emitted as '<Module>.<symbol>', so rule 15 fires for a genuine Swift cross-module reach.",
+      "ownedBy": 8
+    },
+    {
+      "id": "FC-8",
+      "description": "Each adapter fails closed (emits a violation and exits non-zero) when semantic resolution cannot complete, rather than silently emitting a partial/empty qualifiedReferences set that would make rule 15 under-fire.",
+      "ownedBy": 2
+    },
+    {
+      "id": "FC-9",
+      "description": "The shell-to-core linkage rule (evaluate_shell_modules) matches a shell module's qualifiedReferences against the same-domain core module's qualified decision surface ({coreModuleName}.{decisionSurface|decisionProducts}) instead of bare apiReferences, so an unrelated same-named bare function no longer satisfies the rule.",
+      "ownedBy": 9
+    }
+  ],
+  "contextResources": [
+    {
+      "id": "rule15-contract",
+      "kind": "contract",
+      "paths": [
+        "evaluate.py"
+      ],
+      "why": "evaluate_dependency_direction builds the implementation surface as {module_name}.{decision_reference} over shell/state/exempt files and intersects it with each core/value file's qualified_references. Every adapter must emit moduleName and qualifiedReferences in the exact '<ownerModuleName>.<symbol>' form, with the qualifier equal to the owner's moduleName, or the intersection silently never matches.",
+      "consumedBy": [
+        2,
+        4,
+        6,
+        8,
+        9
+      ]
+    },
+    {
+      "id": "fact-schema",
+      "kind": "contract",
+      "paths": [
+        "fact.schema.json"
+      ],
+      "why": "Defines the required moduleName (string) and qualifiedReferences (unique non-empty string list) fields on every source file. TypeScript and Swift must add these fields to become schema-conformant.",
+      "consumedBy": [
+        5,
+        7
+      ]
+    },
+    {
+      "id": "ocaml-syntactic-impl",
+      "kind": "existing-implementation",
+      "paths": [
+        "ocaml/main.ml"
+      ],
+      "why": "record_longident plus module_name_of_path show the current syntactic qualifiedReferences/moduleName derivation (capitalised basename; multi-part longidents only). Patch 4 replaces the syntactic qualified logic with Typedtree resolution; other adapters' BEHAVIOR patches use this as the reference exemplar of the qualified format.",
+      "consumedBy": [
+        2,
+        4,
+        6,
+        8
+      ]
+    },
+    {
+      "id": "go-syntactic-impl",
+      "kind": "existing-implementation",
+      "paths": [
+        "go/main.go"
+      ],
+      "why": "loadGoPackages, goModuleName, goQualifiedReferences, and goArchitectureFileFact show how packages are loaded and how the syntactic qualified set and package-name moduleName are computed today. The Go track escalates the load mode and replaces the syntactic resolver with a types.Info-based one.",
+      "consumedBy": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": "rule15-test-fixtures",
+      "kind": "test-or-static-check",
+      "paths": [
+        "evaluate_test.py",
+        "go/main_test.go"
+      ],
+      "why": "The test_dependency_direction_* cases pin the expected '<Module>.<symbol>' format and the false-positive class (a `t` type and a bare `send` must not flag); go/main_test.go's TestGoModuleNameAndQualifiedReferences pins package-name prefixing and exclusion of locals. BEHAVIOR patches must keep these green and add semantic cases; Patch 9 mirrors the surface construction for shell linkage.",
+      "consumedBy": [
+        2,
+        4,
+        6,
+        8,
+        9
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    "All four adapters emit moduleName and qualifiedReferences and their fact documents validate against fact.schema.json (`just test` passes every suite).",
+    "For every adapter, each entry in qualifiedReferences has the form '<ownerModuleName>.<symbol>' where ownerModuleName is exactly the moduleName that adapter assigns to the symbol's defining module within the same language universe.",
+    "For each adapter, rule 15 (dependency direction) fires for a planted cross-module reach written bare after open/import (or, for Go, cross-package), proving semantic resolution closes the syntactic hole.",
+    "For each adapter, rule 15 does NOT fire on an incidental shared bare name (e.g. a `t` type or a `send` local), preserving the false-positive avoidance that motivated qualified matching.",
+    "When semantic resolution cannot complete (type errors, missing build/index artifacts), the adapter emits a violation and exits non-zero rather than emitting a partial/empty qualifiedReferences set.",
+    "Shell-to-core linkage (evaluate_shell_modules) matches a shell module's qualifiedReferences against the same-domain core module's qualified decision surface, so a planted unrelated same-named bare function no longer satisfies the rule while a genuine open'd/imported/cross-package core call still does.",
+    "Core property-test coverage and state coverage continue to match bare apiReferences (their propertyChecks/operation-sequence evidence is not made qualified by this gameplan)."
+  ],
+  "openQuestions": [],
+  "explicitOpinions": [
+    {
+      "opinion": "Each adapter is split into an INFRA patch (a provable rule-15 no-op) and a BEHAVIOR patch (semantic population), rather than a single patch per adapter.",
+      "rationale": "It maximises INFRA surface and keeps each BEHAVIOR patch minimal and independently reviewable; the INFRA patch also lets TypeScript/Swift reach schema conformance without yet committing to semantic behaviour."
+    },
+    {
+      "opinion": "Adapters must fail closed when semantic resolution is unavailable.",
+      "rationale": "A silently empty/partial qualifiedReferences set turns rule 15 into a no-op (false negatives) — the precise hole issue 6 exists to close — so degrading to syntactic output quietly would defeat the gameplan's purpose."
+    },
+    {
+      "opinion": "Unify the shell-to-core linkage rule onto qualifiedReferences (Patch 9), but leave core property-test coverage and state coverage on bare apiReferences.",
+      "rationale": "Resolved with the user: positive rules should be made precise. Only shell linkage matches file-level apiReferences and can be repointed with the qualified data this gameplan produces; core property-test coverage and state coverage match propertyChecks/operation-sequence references, which the schema emits bare. Unifying those would require adapters to emit qualified property references (a schema + every-adapter extraction change) and is deferred as a documented follow-on. Patch 9 depends on every adapter's semantic BEHAVIOR patch so a legitimately-linked shell is not regressed."
+    },
+    {
+      "opinion": "Swift resolves references via IndexStoreDB (swiftlang/indexstore-db) over a built index store.",
+      "rationale": "Resolved with the user: IndexStoreDB gives the most precise occurrence-to-definition mapping (USR-based) across files, at the cost of a build+index step that Patch 7 owns. SourceKitten/SourceKit-LSP were the lighter but less complete alternatives."
+    },
+    {
+      "opinion": "The OCaml adapter drives a dune build of the consumer project (with bin-annot) to produce .cmt under _build, then reads the Typedtree.",
+      "rationale": "Resolved with the user: this keeps the adapter self-contained rather than pushing build responsibility onto the caller/CI, at the cost of a larger Patch 3 ('build the world') that owns invoking dune and discovering the load path."
+    },
+    {
+      "opinion": "Go emits only cross-package references in qualifiedReferences; same-package and local objects are excluded.",
+      "rationale": "Resolved with the user: obj.Pkg() != selfPkg gating matches the existing TestGoModuleNameAndQualifiedReferences expectations (a bare `send` local and same-package type `t` must not surface) and keeps rule 15 focused on genuine cross-module reaches."
+    },
+    {
+      "opinion": "OCaml and Swift semantic resolution are included as committed complexity-3 tracks despite being 'evaluate feasibility' items in the issue.",
+      "rationale": "The user directed a single gameplan with four parallel adapter tracks rather than a multi-milestone workstream; the feasibility/effort risk is recorded here rather than silently resolved, and the tracks are independent so a stall in one does not block reviewing the others (though atomic merge still requires all)."
+    }
+  ],
+  "patches": [
+    {
+      "number": 1,
+      "classification": "INFRA",
+      "complexity": 2,
+      "title": "Go: load go/types type information (no fact change)",
+      "files": [
+        {
+          "path": "go/main.go",
+          "action": "modify",
+          "description": "Add NeedTypes|NeedTypesInfo|NeedDeps to the packages.Config mode; thread each loaded package's *ast.File + types.Info into file-fact construction (keyed by file path) while still emitting the existing syntactic qualifiedReferences."
+        },
+        {
+          "path": "go/main_test.go",
+          "action": "modify",
+          "description": "Add a skipped semantic test TestGoSemanticQualifiedReferencesResolveBareUses (t.Skip(\"PENDING: Patch 2\")) documenting the expected resolution of a dot-imported/bare cross-package use."
+        }
+      ],
+      "changes": [
+        "In loadGoPackages, extend Mode with packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps.",
+        "Refactor fact construction so file facts are built from the loaded package's Syntax + TypesInfo (mapping CompiledGoFiles/GoFiles to *ast.File), keeping the standalone parser.ParseFile path only as a fallback; emitted facts are byte-for-byte unchanged this patch (still goQualifiedReferences).",
+        "Add go/main_test.go test TestGoSemanticQualifiedReferencesResolveBareUses with t.Skip(\"PENDING: Patch 2\") describing a fixture where a symbol is dot-imported and used bare and must resolve to '<pkg>.Symbol'."
+      ],
+      "requiredContext": [
+        "go-syntactic-impl"
+      ],
+      "testStubsIntroduced": [
+        "go: TestGoSemanticQualifiedReferencesResolveBareUses"
+      ],
+      "testStubsImplemented": null,
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_1.\n\n> Patch 1 wires Go go/packages type semantic infrastructure (type/index information)\n> into the adapter without changing emitted facts. qualifiedReferences\n> for Go go/packages type remain exactly the prior set, so rule 15 behaviour is unchanged.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> No behavioural delta; the contribution is the available semantic data.\ntrue.\n",
+      "precedents": [
+        {
+          "kind": "documentation",
+          "name": "golang.org/x/tools/go/packages (NeedTypes/NeedTypesInfo)",
+          "url": "https://pkg.go.dev/golang.org/x/tools/go/packages",
+          "whyApplicable": "Defines the LoadMode bits; NeedTypes and NeedTypesInfo populate Package.Types and Package.TypesInfo, and NeedDeps is required for cross-package object resolution. Use these to make info.Uses populated in Patch 2."
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "classification": "BEHAVIOR",
+      "complexity": 3,
+      "title": "Go: semantic qualifiedReferences via info.Uses",
+      "files": [
+        {
+          "path": "go/main.go",
+          "action": "modify",
+          "description": "Replace syntactic goQualifiedReferences with goSemanticQualifiedReferences resolving idents via info.Uses[ident] -> types.Object, emitting obj.Pkg().Name()+\".\"+obj.Name() for cross-package objects and skipping same-package/local objects; fail closed if TypesInfo is unavailable."
+        },
+        {
+          "path": "go/main_test.go",
+          "action": "modify",
+          "description": "Implement and unskip TestGoSemanticQualifiedReferencesResolveBareUses; keep TestGoModuleNameAndQualifiedReferences green."
+        }
+      ],
+      "changes": [
+        "Implement goSemanticQualifiedReferences(file *ast.File, info *types.Info, selfPkg *types.Package): for each *ast.Ident with an entry in info.Uses, take the types.Object; if obj.Pkg() != nil and obj.Pkg() != selfPkg, emit obj.Pkg().Name()+\".\"+obj.Name().",
+        "Skip objects whose Pkg() is nil (builtins) or equals selfPkg (same-package), and local vars (their Pkg is selfPkg), so a bare local `send` and a same-package type `t` never surface — matching TestGoModuleNameAndQualifiedReferences.",
+        "Wire goSemanticQualifiedReferences into file-fact construction using the package TypesInfo threaded in Patch 1; remove the syntactic goQualifiedReferences (or keep it unused/deleted).",
+        "Fail closed: if a file has no resolvable TypesInfo (load produced type errors), append a violation and do not emit a fact for that file (consistent with existing load-error handling).",
+        "Unskip and implement the Patch 1 stub test; assert the dot-imported bare use resolves to '<pkg>.Symbol' and that locals/same-package names are absent."
+      ],
+      "requiredContext": [
+        "rule15-contract",
+        "go-syntactic-impl",
+        "ocaml-syntactic-impl",
+        "rule15-test-fixtures"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": [
+        "go: TestGoSemanticQualifiedReferencesResolveBareUses"
+      ],
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_2.\n\n> Patch 2 makes the Go adapter populate qualifiedReferences by semantic\n> resolution: each referenced symbol is resolved to its defining module\n> and emitted as owner-module.symbol, including bare/open'd/imported and\n> (for Go) cross-package uses. Same-module and local references are not\n> emitted. After this patch rule 15 fires for a genuine Go cross-module\n> reach and ignores incidental shared bare names.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> Semantic completeness for Go: foreign-owned references are qualified\n> by their true owner even when written bare.\nall f: SourceFile, s: Symbol, references f s and owner s ~= module-name f | qualified-reference f (owner s) s.\n> Prefix consistency: the qualifier equals the owner module's module-name.\nall f: SourceFile, m: Module, s: Symbol, qualified-reference f m s | m = owner s.\n",
+      "precedents": [
+        {
+          "kind": "documentation",
+          "name": "go/types types.Info.Uses",
+          "url": "https://pkg.go.dev/go/types#Info",
+          "whyApplicable": "Info.Uses maps each identifier use to the types.Object it denotes; obj.Pkg() gives the defining package. This is the exact API the issue cites ('info.Uses[ident] -> types.Object') for resolving bare/dot-imported uses to their owner."
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "classification": "INFRA",
+      "complexity": 2,
+      "title": "OCaml: emit and consume Typedtree (.cmt) infrastructure",
+      "files": [
+        {
+          "path": "ocaml/dune",
+          "action": "modify",
+          "description": "Add -bin-annot so the adapter build emits .cmt/.cmti, and add the cmt_format-capable libraries; no change to emitted facts."
+        },
+        {
+          "path": "ocaml/main.ml",
+          "action": "modify",
+          "description": "Add logic to drive a dune build of the consumer project (with bin-annot) producing .cmt under _build, plus Cmt_format.read_cmt loading and load-path discovery, gated so the existing syntactic record_longident output is unchanged this patch."
+        },
+        {
+          "path": "ocaml/test.sh",
+          "action": "modify",
+          "description": "Add a PENDING-marked fixture for an open'd bare cross-module use (assertion guarded by a 'PENDING: Patch 4' marker)."
+        }
+      ],
+      "changes": [
+        "Update ocaml/dune to (flags (:standard -bin-annot)) so Typedtree annotations are produced for the adapter, and add any dune dependency needed to invoke a consumer build.",
+        "Add logic to drive a dune build of the consumer project (the source roots passed to the adapter) so .cmt artifacts exist under the consumer's _build, then discover the load path and read .cmt via Cmt_format.read_cmt; do not yet use the Typedtree output (emitted facts remain the syntactic set).",
+        "Add a PENDING fixture+assertion to ocaml/test.sh (a core that uses an open'd shell symbol bare) marked '# PENDING: Patch 4', not yet asserted."
+      ],
+      "requiredContext": [],
+      "testStubsIntroduced": [
+        "ocaml: open'd bare reference resolves to owner module"
+      ],
+      "testStubsImplemented": null,
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_3.\n\n> Patch 3 wires OCaml Typedtree (.cmt) semantic infrastructure (type/index information)\n> into the adapter without changing emitted facts. qualifiedReferences\n> for OCaml Typedtree (.cmt) remain exactly the prior set, so rule 15 behaviour is unchanged.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> No behavioural delta; the contribution is the available semantic data.\ntrue.\n",
+      "precedents": [
+        {
+          "kind": "library",
+          "name": "OCaml compiler-libs Cmt_format / Typedtree",
+          "url": null,
+          "whyApplicable": "Cmt_format.read_cmt reads the binary annotations produced by -bin-annot, giving the Typedtree whose Path.t nodes carry resolved module paths. This is the mechanism the issue names for attributing open'd/bare uses to their owner."
+        },
+        {
+          "kind": "documentation",
+          "name": "Merlin / ocaml-index (Typedtree-based name resolution)",
+          "url": "https://github.com/ocaml/merlin",
+          "whyApplicable": "Merlin and ocaml-index resolve identifiers to their definitions over the Typedtree and the load path; their approach to mapping a Path.t to a defining compilation unit is the model for record_typedtree_reference in Patch 4."
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "classification": "BEHAVIOR",
+      "complexity": 3,
+      "title": "OCaml: resolve qualifiedReferences from the Typedtree",
+      "files": [
+        {
+          "path": "ocaml/main.ml",
+          "action": "modify",
+          "description": "Walk the Typedtree, resolve each reference's Path.t/Env to its defining module, and populate qualified_references including open'd/bare uses; replace the syntactic multi-part-longident logic in record_longident."
+        },
+        {
+          "path": "ocaml/test.sh",
+          "action": "modify",
+          "description": "Enable and assert the Patch 3 PENDING fixture: the open'd bare cross-module use surfaces as 'Owner.symbol'."
+        }
+      ],
+      "changes": [
+        "Implement record_typedtree_reference: for each resolved Path.t, derive the owning module (compilation unit) and emit '<Owner_module>.<symbol>' into qualified_references, including identifiers used bare after open.",
+        "Keep moduleName = capitalised basename; ensure the owner-module name derived for a reference matches the owner file's moduleName (prefix consistency).",
+        "Fail closed: if the .cmt/Typedtree for a source file is unavailable, emit a violation and exit non-zero rather than falling back to the syntactic set.",
+        "Enable the Patch 3 PENDING assertion and verify the open'd bare use resolves; verify an incidental shared bare name does not surface."
+      ],
+      "requiredContext": [
+        "rule15-contract",
+        "ocaml-syntactic-impl",
+        "rule15-test-fixtures"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": [
+        "ocaml: open'd bare reference resolves to owner module"
+      ],
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_4.\n\n> Patch 4 makes the OCaml adapter populate qualifiedReferences by semantic\n> resolution: each referenced symbol is resolved to its defining module\n> and emitted as owner-module.symbol, including bare/open'd/imported and\n> (for Go) cross-package uses. Same-module and local references are not\n> emitted. After this patch rule 15 fires for a genuine OCaml cross-module\n> reach and ignores incidental shared bare names.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> Semantic completeness for OCaml: foreign-owned references are qualified\n> by their true owner even when written bare.\nall f: SourceFile, s: Symbol, references f s and owner s ~= module-name f | qualified-reference f (owner s) s.\n> Prefix consistency: the qualifier equals the owner module's module-name.\nall f: SourceFile, m: Module, s: Symbol, qualified-reference f m s | m = owner s.\n",
+      "precedents": [
+        {
+          "kind": "library",
+          "name": "OCaml compiler-libs Typedtree / Path",
+          "url": null,
+          "whyApplicable": "Typedtree expression nodes carry a resolved Path.t whose head identifies the defining module; walk the typed AST (Tast_iterator) and map each Path to its owning compilation unit to build qualified references."
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "classification": "INFRA",
+      "complexity": 2,
+      "title": "TypeScript: emit moduleName + empty qualifiedReferences (schema conformance)",
+      "files": [
+        {
+          "path": "typescript/src/main.ts",
+          "action": "modify",
+          "description": "Add moduleName (capitalised file basename) and qualifiedReferences (empty array) to SourceFact and the Facts type; emit them so the fact document validates."
+        },
+        {
+          "path": "typescript/test.sh",
+          "action": "modify",
+          "description": "Add a PENDING-marked fixture for a named-import bare use (assertion guarded by 'PENDING: Patch 6')."
+        }
+      ],
+      "changes": [
+        "Add moduleName: string and qualifiedReferences: string[] to the SourceFact interface and internal Facts; compute moduleName from the file basename (capitalised), qualifiedReferences = [].",
+        "Emit both fields in sourceFact so the TypeScript fact document passes fact.schema.json (rule-15 no-op while empty).",
+        "Add a PENDING fixture+assertion to typescript/test.sh using node:test test.skip semantics or a '# PENDING: Patch 6' marker describing a core importing a shell symbol via a named import and using it bare."
+      ],
+      "requiredContext": [
+        "fact-schema"
+      ],
+      "testStubsIntroduced": [
+        "typescript: named-import bare reference resolves to owner module"
+      ],
+      "testStubsImplemented": null,
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_5.\n\n> Patch 5 brings the TypeScript adapter onto the schema contract: it emits\n> moduleName and an (initially empty) qualifiedReferences array. An\n> empty qualifiedReferences set is a rule-15 no-op, so observable policy\n> behaviour is unchanged while the adapter becomes schema-conformant.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> No qualified references are emitted yet, so rule 15 is a no-op for the\n> TypeScript adapter; the contribution is the moduleName field and the field shape.\nall f: SourceFile, m: Module, s: Symbol | ~ qualified-reference f m s.\n",
+      "precedents": null
+    },
+    {
+      "number": 6,
+      "classification": "BEHAVIOR",
+      "complexity": 3,
+      "title": "TypeScript: semantic qualifiedReferences via Program + TypeChecker",
+      "files": [
+        {
+          "path": "typescript/src/main.ts",
+          "action": "modify",
+          "description": "Build a ts.Program + TypeChecker with real tsconfig/module resolution; resolve each reference's symbol to its declaring source file and emit '<Module>.<symbol>'; replace per-file ts.createSourceFile."
+        },
+        {
+          "path": "typescript/test.sh",
+          "action": "modify",
+          "description": "Enable and assert the Patch 5 PENDING fixture: the named-import bare use surfaces as 'Owner.symbol'."
+        }
+      ],
+      "changes": [
+        "Replace per-file ts.createSourceFile with buildProgram(filePaths): create a ts.Program (reading tsconfig, resolving node_modules) and obtain getTypeChecker().",
+        "For each reference identifier, checker.getSymbolAtLocation -> resolve aliases (getAliasedSymbol) -> declaration's SourceFile -> owner moduleName (capitalised basename); emit '<Module>.<symbol>' for symbols owned by another module; skip same-file/local symbols.",
+        "Ensure the owner moduleName derivation matches the owner file's emitted moduleName (prefix consistency).",
+        "Fail closed: if program creation or symbol resolution fails, emit a violation and exit non-zero rather than emitting empty qualifiedReferences.",
+        "Enable the Patch 5 PENDING assertion; verify the named-import bare use resolves and that a same-file local name does not surface."
+      ],
+      "requiredContext": [
+        "rule15-contract",
+        "ocaml-syntactic-impl",
+        "rule15-test-fixtures"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": [
+        "typescript: named-import bare reference resolves to owner module"
+      ],
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_6.\n\n> Patch 6 makes the TypeScript adapter populate qualifiedReferences by semantic\n> resolution: each referenced symbol is resolved to its defining module\n> and emitted as owner-module.symbol, including bare/open'd/imported and\n> (for Go) cross-package uses. Same-module and local references are not\n> emitted. After this patch rule 15 fires for a genuine TypeScript cross-module\n> reach and ignores incidental shared bare names.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> Semantic completeness for TypeScript: foreign-owned references are qualified\n> by their true owner even when written bare.\nall f: SourceFile, s: Symbol, references f s and owner s ~= module-name f | qualified-reference f (owner s) s.\n> Prefix consistency: the qualifier equals the owner module's module-name.\nall f: SourceFile, m: Module, s: Symbol, qualified-reference f m s | m = owner s.\n",
+      "precedents": [
+        {
+          "kind": "documentation",
+          "name": "TypeScript Compiler API (Program, TypeChecker, getSymbolAtLocation)",
+          "url": "https://github.com/microsoft/TypeScript/wiki/Using-the-Compiler-API",
+          "whyApplicable": "createProgram + getTypeChecker + getSymbolAtLocation/getAliasedSymbol resolve an identifier (including a named import used bare) to its declaring symbol and source file, which is exactly the resolution the issue prescribes for TypeScript."
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "classification": "INFRA",
+      "complexity": 2,
+      "title": "Swift: emit moduleName + empty qualifiedReferences (schema conformance)",
+      "files": [
+        {
+          "path": "swift/Sources/SwiftArchLint/main.swift",
+          "action": "modify",
+          "description": "Add moduleName (capitalised file basename) and qualifiedReferences (empty array) to SourceFact and the file-info struct; emit them so the fact document validates."
+        },
+        {
+          "path": "swift/test.sh",
+          "action": "modify",
+          "description": "Add a PENDING-marked fixture for a bare cross-file reference (assertion guarded by 'PENDING: Patch 8')."
+        }
+      ],
+      "changes": [
+        "Add moduleName: String and qualifiedReferences: [String] to SourceFact (and the SwiftFileInfo struct); compute moduleName from the file basename (capitalised), qualifiedReferences = [].",
+        "Emit both fields in sourceFact so the Swift fact document passes fact.schema.json (rule-15 no-op while empty).",
+        "Add a PENDING fixture+assertion to swift/test.sh marked '# PENDING: Patch 8' describing a core referencing a shell symbol declared in another file."
+      ],
+      "requiredContext": [
+        "fact-schema"
+      ],
+      "testStubsIntroduced": [
+        "swift: cross-file bare reference resolves to owner module"
+      ],
+      "testStubsImplemented": null,
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_7.\n\n> Patch 7 brings the Swift adapter onto the schema contract: it emits\n> moduleName and an (initially empty) qualifiedReferences array. An\n> empty qualifiedReferences set is a rule-15 no-op, so observable policy\n> behaviour is unchanged while the adapter becomes schema-conformant.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> No qualified references are emitted yet, so rule 15 is a no-op for the\n> Swift adapter; the contribution is the moduleName field and the field shape.\nall f: SourceFile, m: Module, s: Symbol | ~ qualified-reference f m s.\n",
+      "precedents": null
+    },
+    {
+      "number": 8,
+      "classification": "BEHAVIOR",
+      "complexity": 3,
+      "title": "Swift: semantic qualifiedReferences via IndexStoreDB",
+      "files": [
+        {
+          "path": "swift/Sources/SwiftArchLint/main.swift",
+          "action": "modify",
+          "description": "Build an index store for the target and read it with IndexStoreDB to map each reference occurrence to its defining file/USR; emit '<Module>.<symbol>' and populate qualifiedReferences."
+        },
+        {
+          "path": "swift/Package.swift",
+          "action": "modify",
+          "description": "Add the swiftlang/indexstore-db package dependency."
+        },
+        {
+          "path": "swift/test.sh",
+          "action": "modify",
+          "description": "Enable and assert the Patch 7 PENDING fixture: the cross-file bare reference surfaces as 'Owner.symbol'."
+        }
+      ],
+      "changes": [
+        "Produce an index store for the analysed sources (build with -index-store-path) and open it via IndexStoreDB.",
+        "For each reference occurrence, look up its definition's file via the index, derive the owner moduleName (capitalised basename), and emit '<Module>.<symbol>' for cross-file references; skip same-file/local symbols.",
+        "Ensure prefix consistency: the owner moduleName matches the owner file's emitted moduleName.",
+        "Fail closed: if the index build or IndexStoreDB query fails or is unavailable, emit a violation and exit non-zero rather than emitting empty qualifiedReferences.",
+        "Enable the Patch 7 PENDING assertion; verify the cross-file reference resolves and an incidental shared name does not surface."
+      ],
+      "requiredContext": [
+        "rule15-contract",
+        "ocaml-syntactic-impl",
+        "rule15-test-fixtures"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": [
+        "swift: cross-file bare reference resolves to owner module"
+      ],
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_8.\n\n> Patch 8 makes the Swift adapter populate qualifiedReferences by semantic\n> resolution: each referenced symbol is resolved to its defining module\n> and emitted as owner-module.symbol, including bare/open'd/imported and\n> (for Go) cross-package uses. Same-module and local references are not\n> emitted. After this patch rule 15 fires for a genuine Swift cross-module\n> reach and ignores incidental shared bare names.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> Semantic completeness for Swift: foreign-owned references are qualified\n> by their true owner even when written bare.\nall f: SourceFile, s: Symbol, references f s and owner s ~= module-name f | qualified-reference f (owner s) s.\n> Prefix consistency: the qualifier equals the owner module's module-name.\nall f: SourceFile, m: Module, s: Symbol, qualified-reference f m s | m = owner s.\n",
+      "precedents": [
+        {
+          "kind": "library",
+          "name": "IndexStoreDB (swiftlang/indexstore-db)",
+          "url": "https://github.com/swiftlang/indexstore-db",
+          "whyApplicable": "IndexStoreDB reads the compiler's index store (produced with -index-store-path) to map a symbol occurrence to its defining file/USR — the semantic resolution Swift lacks from SwiftSyntax alone. Use its occurrence/symbol queries to find each reference's declaring file."
+        }
+      ]
+    },
+    {
+      "number": 9,
+      "classification": "BEHAVIOR",
+      "complexity": 3,
+      "title": "Unify shell-to-core linkage onto qualifiedReferences",
+      "files": [
+        {
+          "path": "evaluate.py",
+          "action": "modify",
+          "description": "Change evaluate_shell_modules to build the core handler surface as {core.module_name}.{decision_surface|decision_products} and intersect it with the shell file's qualified_references instead of bare api_references."
+        },
+        {
+          "path": "evaluate_test.py",
+          "action": "modify",
+          "description": "Update the shell-linkage tests to the qualified form and add a case proving an unrelated same-named bare function no longer satisfies the rule while a qualified core call does."
+        }
+      ],
+      "changes": [
+        "In evaluate_shell_modules, build core_handler_references_by_domain as the set of f'{core.module_name}.{s}' for s in (decision_surface | decision_products) over core files with a module_name.",
+        "Flag a shell module when its qualified_references does NOT intersect that same-domain qualified surface (mirroring rule 15's surface construction, but as a positive requirement).",
+        "Leave evaluate_core_modules and evaluate_state_modules unchanged (they match propertyChecks/operation-sequence evidence emitted bare).",
+        "Update evaluate_test.py shell-linkage cases to the qualified surface; add a regression test where a shell shares a bare name with core but holds no qualified reference and is therefore (correctly) flagged, and a positive case where a qualified core reference satisfies the rule."
+      ],
+      "requiredContext": [
+        "rule15-contract",
+        "rule15-test-fixtures"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": null,
+      "spec": "module SEMANTIC_REFERENCE_RESOLUTION_PATCH_9.\n\n> Patch 9 unifies the shell-to-core linkage rule onto qualifiedReferences:\n> a shell module satisfies the linkage requirement only via a qualified\n> reference to a same-domain core module's declared decision surface, so an\n> unrelated same-named bare function no longer satisfies it. It depends on\n> every adapter's semantic BEHAVIOR patch so a legitimately-linked shell\n> (calling a core API via open / import / cross-package) is not regressed.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\ndecision-surface? f: SourceFile, s: Symbol => Bool.\nshell? f: SourceFile => Bool.\ncore? f: SourceFile => Bool.\nshell-linked? f: SourceFile => Bool.\n---\n> A shell module is linked iff it qualified-references a same-domain core\n> module's declared decision surface.\nall f: SourceFile, shell? f and shell-linked? f | some c: SourceFile, s: Symbol | core? c and domain c = domain f and decision-surface? c s and qualified-reference f (module-name c) s.\n",
+      "precedents": null
+    }
+  ],
+  "testMap": [
+    {
+      "testName": "go: TestGoSemanticQualifiedReferencesResolveBareUses",
+      "file": "go/main_test.go",
+      "stubPatch": 1,
+      "implPatch": 2
+    },
+    {
+      "testName": "ocaml: open'd bare reference resolves to owner module",
+      "file": "ocaml/test.sh",
+      "stubPatch": 3,
+      "implPatch": 4
+    },
+    {
+      "testName": "typescript: named-import bare reference resolves to owner module",
+      "file": "typescript/test.sh",
+      "stubPatch": 5,
+      "implPatch": 6
+    },
+    {
+      "testName": "swift: cross-file bare reference resolves to owner module",
+      "file": "swift/test.sh",
+      "stubPatch": 7,
+      "implPatch": 8
+    }
+  ],
+  "dependencyGraph": [
+    {
+      "patch": 1,
+      "classification": "INFRA",
+      "dependsOn": []
+    },
+    {
+      "patch": 2,
+      "classification": "BEHAVIOR",
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "patch": 3,
+      "classification": "INFRA",
+      "dependsOn": []
+    },
+    {
+      "patch": 4,
+      "classification": "BEHAVIOR",
+      "dependsOn": [
+        3
+      ]
+    },
+    {
+      "patch": 5,
+      "classification": "INFRA",
+      "dependsOn": []
+    },
+    {
+      "patch": 6,
+      "classification": "BEHAVIOR",
+      "dependsOn": [
+        5
+      ]
+    },
+    {
+      "patch": 7,
+      "classification": "INFRA",
+      "dependsOn": []
+    },
+    {
+      "patch": 8,
+      "classification": "BEHAVIOR",
+      "dependsOn": [
+        7
+      ]
+    },
+    {
+      "patch": 9,
+      "classification": "BEHAVIOR",
+      "dependsOn": [
+        2,
+        4,
+        6,
+        8
+      ]
+    }
+  ],
+  "mergabilityChecklist": {
+    "featureFlagStrategyDocumented": true,
+    "earlyPatchesNonFunctional": true,
+    "testStubsInInfraPatches": true,
+    "testImplsColocated": true,
+    "testMapComplete": true,
+    "testMapImplPatchMatchesCode": true,
+    "behaviorPatchesMinimal": true,
+    "dependencyGraphOrdered": true,
+    "behaviorPatchesJustified": true,
+    "functionalChangesOwnedByExactlyOnePatch": true,
+    "operationalConsiderationsSubstantive": true,
+    "gameplanIsAtomicAndAutonomous": true
+  },
+  "mergabilityInsight": "4 of 9 patches are INFRA (rule-15 no-ops): Go/OCaml wire in semantic machinery with unchanged output, and TypeScript/Swift reach schema conformance with an empty qualifiedReferences set. Of the 5 BEHAVIOR patches, four each sharpen exactly one adapter's own facts (independently mergeable), and the fifth (Patch 9) repoints shell linkage onto qualifiedReferences and so joins on all four semantic patches. The gameplan is atomic and autonomous: no patch is conditional on another's runtime outcome and no human action is required between patches; all design choices were resolved up front, so openQuestions is empty before execution begins.",
+  "finalStateSpec": "module SEMANTIC_REFERENCE_RESOLUTION.\n\n> ══════════════════════════════════════════\n> THE GUARANTEE\n> ══════════════════════════════════════════\n> After this gameplan all four adapters (Go, OCaml, TypeScript,\n> Swift) resolve references semantically. Every reference to a\n> symbol owned by another module in the same language universe is\n> emitted in qualifiedReferences as \"owner-module.symbol\", including\n> uses written bare after open/import or within the same package.\n> The dependency-direction rule (rule 15) therefore fires for a\n> genuine cross-module reach in every adapter, not only OCaml, and\n> never fires on an incidental shared bare name.\n\nSourceFile.\nModule.\nSymbol.\nModuleType.\nDomain.\n\nmodule-name f: SourceFile => Module.\nmodule-type f: SourceFile => ModuleType.\ndomain f: SourceFile => Domain.\nowner s: Symbol => Module.\nreferences f: SourceFile, s: Symbol => Bool.\nqualified-reference f: SourceFile, m: Module, s: Symbol => Bool.\ndecision-reference f: SourceFile, s: Symbol => Bool.\n---\n> Semantic completeness: a reference to a symbol owned by a foreign\n> module is always emitted qualified by that owner, even when the\n> source writes it bare (after open / import / same package). This\n> closes the syntactic hole described in issue 6.\nall f: SourceFile, s: Symbol, references f s and owner s ~= module-name f | qualified-reference f (owner s) s.\n\n> Prefix consistency: the qualifier on any emitted qualified\n> reference is exactly the owner module's own module-name. Without\n> this, rule 15's intersection silently never matches.\nall f: SourceFile, m: Module, s: Symbol, qualified-reference f m s | m = owner s.\n\nwhere\n\n> ══════════════════════════════════════════\n> RULE 15 (dependency direction) effectiveness\n> ══════════════════════════════════════════\n> A core or value module is flagged exactly when it holds a\n> qualified reference to a same-domain implementation module's\n> declared decision reference. reaches-implementation c holds when\n> some same-domain shell/state/exempt file i declares a symbol s\n> with qualified-reference c (module-name i) s. Incidental bare\n> name collisions never flag because they are not emitted as\n> qualified references.\n\nimplementation? mt: ModuleType => Bool.\ncore-or-value? mt: ModuleType => Bool.\nreaches-implementation? c: SourceFile => Bool.\nflagged? c: SourceFile => Bool.\n\ncore => ModuleType.\nvalue => ModuleType.\nshell => ModuleType.\nstate => ModuleType.\nexempt => ModuleType.\n---\nall mt: ModuleType | implementation? mt = (mt = shell or mt = state or mt = exempt).\nall mt: ModuleType | core-or-value? mt = (mt = core or mt = value).\n\n> The flag fires iff a core/value file actually reaches a same-domain\n> implementation surface via a qualified reference.\nall c: SourceFile, core-or-value? (module-type c) | flagged? c = reaches-implementation? c.\n\n> Soundness of the prohibition: a flag implies a real qualified\n> cross-module reach into a same-domain implementation decision\n> reference.\nall c: SourceFile, reaches-implementation? c | some i: SourceFile | implementation? (module-type i) and domain i = domain c.\n"
+}

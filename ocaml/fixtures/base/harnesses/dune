@@ -1,0 +1,5 @@
+(library
+ (name fixture_harnesses)
+ (wrapped false)
+ (modules :standard)
+ (libraries fixture_lib))
