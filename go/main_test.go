@@ -53,17 +53,17 @@ func parseViolationOutput(output string) []violation {
 
 func TestLintBackendArchitectureAcceptsHandlerWithDecisionModule(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
-		"internal/auth/auth_decision.go": `// @archlint.module core
+		"internal/auth/decision/auth_decision.go": `// @archlint.module core
 // @archlint.domain auth
-package auth
+package decision
 
 func DecideTokenClaims(subject string) bool {
 	return subject != ""
 }
 `,
-		"internal/auth/auth_decision_test.go": `// @archlint.module test
+		"internal/auth/decision/auth_decision_test.go": `// @archlint.module test
 // @archlint.domain auth
-package auth
+package decision
 
 import (
 	"testing"
@@ -83,10 +83,13 @@ func TestDecideTokenClaimsProperty(t *testing.T) {
 // @archlint.domain auth
 package auth
 
-import "net/http"
+import (
+	"archlintfixture/internal/auth/decision"
+	"net/http"
+)
 
 func Handle() string {
-	if DecideTokenClaims(http.MethodGet) {
+	if decision.DecideTokenClaims(http.MethodGet) {
 		return http.MethodGet
 	}
 	return ""
@@ -344,9 +347,9 @@ func Route(_ CoreVocabulary) string {
 
 func TestLintBackendArchitectureAcceptsHandlerWithCoreDecisionProductReference(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
-		"internal/httpapi/http_decision.go": `// @archlint.module core
+		"internal/httpapi/decision/http_decision.go": `// @archlint.module core
 // @archlint.domain http-api
-package httpapi
+package decision
 
 type RoutePlan struct{}
 
@@ -357,9 +360,9 @@ func DecideRoute(input bool) RoutePlan {
 	return RoutePlan{}
 }
 `,
-		"internal/httpapi/http_decision_test.go": `// @archlint.module test
+		"internal/httpapi/decision/http_decision_test.go": `// @archlint.module test
 // @archlint.domain http-api
-package httpapi
+package decision
 
 import (
 	"testing"
@@ -380,9 +383,12 @@ func TestDecideRouteProperty(t *testing.T) {
 // @archlint.domain http-api
 package httpapi
 
-import "net/http"
+import (
+	"archlintfixture/internal/httpapi/decision"
+	"net/http"
+)
 
-func Route(_ RoutePlan) string {
+func Route(_ decision.RoutePlan) string {
 	return http.MethodGet
 }
 `,
