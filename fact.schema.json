@@ -117,6 +117,8 @@
         "propertyTestSurface",
         "decisionProducts",
         "decisionReferences",
+        "moduleName",
+        "qualifiedReferences",
         "effectfulImports",
         "effectfulIdentifiers",
         "sharedState",
@@ -134,6 +136,8 @@
         "propertyTestSurface": { "$ref": "#/$defs/stringList" },
         "decisionProducts": { "$ref": "#/$defs/stringList" },
         "decisionReferences": { "$ref": "#/$defs/stringList" },
+        "moduleName": { "type": "string" },
+        "qualifiedReferences": { "$ref": "#/$defs/stringList" },
         "effectfulImports": { "$ref": "#/$defs/stringList" },
         "effectfulIdentifiers": { "$ref": "#/$defs/stringList" },
         "sharedState": {

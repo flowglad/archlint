@@ -44,6 +44,8 @@ type file_fact = {
   property_test_surface : string list;
   decision_products : string list;
   decision_references : string list;
+  module_name : string;
+  qualified_references : string list;
   effectful_imports : string list;
   effectful_identifiers : string list;
   shared_state : shared_state list;
@@ -64,6 +66,7 @@ type facts = {
   mutable property_test_surface : StringSet.t;
   mutable decision_products : StringSet.t;
   mutable decision_references : StringSet.t;
+  mutable qualified_references : StringSet.t;
   mutable effectful_identifiers : StringSet.t;
   mutable shared_state : StringSet.t StringMap.t;
   mutable property_checks : property_check list;
@@ -84,6 +87,7 @@ let empty_facts () =
     property_test_surface = StringSet.empty;
     decision_products = StringSet.empty;
     decision_references = StringSet.empty;
+    qualified_references = StringSet.empty;
     effectful_identifiers = StringSet.empty;
     shared_state = StringMap.empty;
     property_checks = [];
@@ -267,6 +271,14 @@ let record_longident facts lid =
   let parts = lid_parts lid in
   List.iter (add_identifier facts) parts;
   add_api_reference facts (lid_last lid);
+  (* A module-qualified reference like [Backend_registry.auto_model] is recorded
+     in full so the dependency-direction rule can match against a same-domain
+     module's qualified surface ([Module_name + "." + declared]) rather than on
+     a bare, collision-prone last segment. A bare use (after [open], or a local
+     binding) has a single part and is intentionally not recorded here. *)
+  (match parts with
+  | _ :: _ :: _ -> facts.qualified_references <- add facts.qualified_references (lid_text lid)
+  | _ -> ());
   List.iter
     (fun part ->
       if StringSet.mem part test_library_identifiers then facts.api_references <- add facts.api_references part;
@@ -819,6 +831,8 @@ let file_fact_to_json fact =
       ("propertyTestSurface", json_string_list fact.property_test_surface);
       ("decisionProducts", json_string_list fact.decision_products);
       ("decisionReferences", json_string_list fact.decision_references);
+      ("moduleName", `String fact.module_name);
+      ("qualifiedReferences", json_string_list fact.qualified_references);
       ("effectfulImports", json_string_list fact.effectful_imports);
       ("effectfulIdentifiers", json_string_list fact.effectful_identifiers);
       ("sharedState", `List (List.map shared_state_to_json fact.shared_state));
@@ -854,6 +868,8 @@ let source_fact ~root:_ ~interfaces ~test_scope_paths path =
   {
     path;
     test_scope = infer_test_scope ~test_scope_paths path facts;
+    module_name = String.capitalize_ascii (basename_without_extension path);
+    qualified_references = set_to_list facts.qualified_references;
     metadata;
     imports = set_to_list facts.imports;
     identifiers = set_to_list facts.identifiers;

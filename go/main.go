@@ -42,6 +42,8 @@ type architectureFileFact struct {
 	PropertyTestSurface    []string                      `json:"propertyTestSurface"`
 	DecisionProducts       []string                      `json:"decisionProducts"`
 	DecisionReferences     []string                      `json:"decisionReferences"`
+	ModuleName             string                        `json:"moduleName"`
+	QualifiedReferences    []string                      `json:"qualifiedReferences"`
 	EffectfulImports       []string                      `json:"effectfulImports"`
 	EffectfulIdentifiers   []string                      `json:"effectfulIdentifiers"`
 	SharedState            []sharedStateFact             `json:"sharedState"`
@@ -250,6 +252,8 @@ func goArchitectureFileFact(path string) (architectureFileFact, []violation) {
 		PropertyTestSurface:    setToSortedSlice(decisionSurface),
 		DecisionProducts:       setToSortedSlice(decisionProducts),
 		DecisionReferences:     setToSortedSlice(decisionReferences),
+		ModuleName:             goModuleName(syntaxFile),
+		QualifiedReferences:    setToSortedSlice(goQualifiedReferences(syntaxFile)),
 		EffectfulImports:       goEffectfulImports(imports),
 		EffectfulIdentifiers:   []string{},
 		SharedState:            goSharedStateEvidence(syntaxFile),
@@ -297,6 +301,44 @@ func goImportNamesByPath(syntaxFile *ast.File) map[string]map[string]bool {
 		}
 	}
 	return imports
+}
+
+// goModuleName is the file's package name, used as the qualifier for the
+// surface it declares (e.g. "routing.Decide"). Go domains generally map to
+// packages, so references within the same package are bare and are not
+// attributed to a foreign module.
+func goModuleName(syntaxFile *ast.File) string {
+	if syntaxFile.Name == nil {
+		return ""
+	}
+	return syntaxFile.Name.Name
+}
+
+// goQualifiedReferences records package-qualified selector references in their
+// "pkg.Symbol" form, so the dependency-direction rule matches a genuine
+// cross-package reach rather than a bare, collision-prone selector name. A
+// selector is treated as package-qualified when its base identifier is one of
+// the file's imported package names; field/method selectors on values are not.
+func goQualifiedReferences(syntaxFile *ast.File) map[string]struct{} {
+	importNames := map[string]bool{}
+	for _, names := range goImportNamesByPath(syntaxFile) {
+		for name := range names {
+			importNames[name] = true
+		}
+	}
+	references := map[string]struct{}{}
+	ast.Inspect(syntaxFile, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		base, ok := selector.X.(*ast.Ident)
+		if ok && importNames[base.Name] {
+			references[base.Name+"."+selector.Sel.Name] = struct{}{}
+		}
+		return true
+	})
+	return references
 }
 
 func importPath(importSpec *ast.ImportSpec) string {

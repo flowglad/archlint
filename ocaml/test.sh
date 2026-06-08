@@ -140,6 +140,15 @@ assert "decide" in state[0]["operationSequences"][0]["operations"], state
 assert "decide" in state[0]["operationSequences"][0]["assertions"], state
 handler = [item for item in document["files"] if item["path"].endswith("handler.ml")][0]
 assert "Unix" in handler["effectfulIdentifiers"], handler
+# moduleName is the OCaml module of the file; qualifiedReferences carry the full
+# Module.value form for module-qualified uses (here Decision.decide), so the
+# dependency-direction rule matches on qualified names rather than bare ones.
+assert handler["moduleName"] == "Handler", handler
+assert "Decision.decide" in handler["qualifiedReferences"], handler
+decision = [item for item in document["files"] if item["path"].endswith("/lib/decision.ml")][0]
+assert decision["moduleName"] == "Decision", decision
+# decision.ml uses `decide` only as its own bare binding, never Module-qualified.
+assert decision["qualifiedReferences"] == [], decision
 fuzz = [item for item in document["files"] if item["path"].endswith("fuzz_decision.ml")][0]
 assert fuzz["testScope"] == "fuzz_decision", fuzz
 # Test scope inferred from the dune (test ...) stanza, not a test-library reference.
