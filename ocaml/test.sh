@@ -52,13 +52,16 @@ cat > "$TMPDIR/lib/qCheck2.ml" <<'ML'
 module Gen = struct
   type 'a t = unit
 
-  let list _ = ()
-  let small_int = ()
-  let unit = ()
+  let list (_ : 'a t) : 'a list t = ()
+  let map (_ : 'a -> 'b) (_ : 'a t) : 'b t = ()
+  let int : int t = ()
+  let small_int : int t = ()
+  let unit : unit t = ()
 end
 
 module Test = struct
-  let make ~name:_ _ f = f
+  let make ~name:_ (_ : 'a Gen.t) (_ : 'a -> bool) = ()
+  let check_exn _ = ()
 end
 ML
 

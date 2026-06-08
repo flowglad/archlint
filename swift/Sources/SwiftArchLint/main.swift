@@ -1,4 +1,5 @@
 import Foundation
+import IndexStoreDB
 import SwiftParser
 import SwiftSyntax
 import Yams
@@ -31,6 +32,26 @@ struct SwiftFileInfo {
   let interfaceLogicEvidence: InterfaceLogicEvidence
   let sharedState: [SharedStateFact]
   let propertyChecks: [PropertyCheckFact]
+
+  func withQualifiedReferences(_ references: Set<String>) -> SwiftFileInfo {
+    SwiftFileInfo(
+      url: url,
+      source: source,
+      moduleName: moduleName,
+      metadata: metadata,
+      imports: imports,
+      identifiers: identifiers,
+      apiReferences: apiReferences,
+      qualifiedReferences: references,
+      decisionReferences: decisionReferences,
+      decisionSurface: decisionSurface,
+      propertyTestSurface: propertyTestSurface,
+      decisionProducts: decisionProducts,
+      interfaceLogicEvidence: interfaceLogicEvidence,
+      sharedState: sharedState,
+      propertyChecks: propertyChecks
+    )
+  }
 }
 
 struct SwiftTarget {
@@ -231,12 +252,23 @@ enum SwiftArchLint {
 
   private static func architectureFacts(xcodegenURL: URL) throws -> ArchitectureFacts {
     let targets: [SwiftTarget] = try swiftTargets(xcodegenURL: xcodegenURL)
-    let files: [SourceFact] = try targets.flatMap { target in
+    let fileInfosWithScopes: [(SwiftFileInfo, String)] = try targets.flatMap { target in
       try target.sourceRoots.flatMap { root in
         try swiftFileInfos(root: root).map {
-          sourceFact($0, testScope: target.isTestScope ? target.name : "")
+          ($0, target.isTestScope ? target.name : "")
         }
       }
+    }
+    let qualifiedReferencesByPath: [String: Set<String>] = try semanticQualifiedReferences(
+      for: fileInfosWithScopes.map(\.0),
+      indexableRoots: targets.filter { !$0.isTestScope }.flatMap(\.sourceRoots)
+    )
+    let files: [SourceFact] = fileInfosWithScopes.map { fileInfo, testScope in
+      let semanticReferences: Set<String> = qualifiedReferencesByPath[fileInfo.url.path] ?? []
+      return sourceFact(
+        fileInfo.withQualifiedReferences(semanticReferences),
+        testScope: testScope
+      )
     }
     return ArchitectureFacts(files: files)
   }
@@ -285,7 +317,8 @@ enum SwiftArchLint {
   }
 
   private static func swiftFileInfo(_ fileURL: URL) throws -> SwiftFileInfo {
-    let source: String = try String(contentsOf: fileURL, encoding: .utf8)
+    let canonicalFileURL: URL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+    let source: String = try String(contentsOf: canonicalFileURL, encoding: .utf8)
     let tree: SourceFileSyntax = Parser.parse(source: source)
     let metadata: ModuleMetadata = parseModuleMetadata(source)
     let functionBodyVisitor: FunctionBodyVisitor = FunctionBodyVisitor(viewMode: .sourceAccurate)
@@ -297,9 +330,9 @@ enum SwiftArchLint {
     visitor.walk(tree)
 
     return SwiftFileInfo(
-      url: fileURL,
+      url: canonicalFileURL,
       source: source,
-      moduleName: capitalizedModuleName(for: fileURL),
+      moduleName: capitalizedModuleName(for: canonicalFileURL),
       metadata: metadata,
       imports: Set(visitor.importedModules),
       identifiers: Set(visitor.identifiers),
@@ -321,6 +354,286 @@ enum SwiftArchLint {
           )
         }
     )
+  }
+
+  private static func semanticQualifiedReferences(
+    for fileInfos: [SwiftFileInfo],
+    indexableRoots: [URL]
+  ) throws -> [String: Set<String>] {
+    let indexedFiles: [URL] = try indexableSwiftFiles(in: indexableRoots)
+    if indexedFiles.isEmpty {
+      return [:]
+    }
+
+    let temporaryRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "archlint-swift-index-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let sourceCopies: URL = temporaryRoot.appending(path: "sources", directoryHint: .isDirectory)
+    let indexStore: URL = temporaryRoot.appending(path: "index-store", directoryHint: .isDirectory)
+    let indexDatabase: URL = temporaryRoot.appending(path: "index-db", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(
+      at: temporaryRoot,
+      withIntermediateDirectories: true
+    )
+    defer {
+      try? FileManager.default.removeItem(at: temporaryRoot)
+    }
+
+    try buildIndexStore(for: indexedFiles, sourceCopies: sourceCopies, indexStore: indexStore)
+
+    let library: IndexStoreLibrary = try IndexStoreLibrary(dylibPath: try indexStoreLibraryPath())
+    let index: IndexStoreDB = try IndexStoreDB(
+      storePath: indexStore.path,
+      databasePath: indexDatabase.path,
+      library: library,
+      waitUntilDoneInitializing: true,
+      prefixMappings: [
+        PathMapping(original: sourceCopies.path + "/", replacement: "/")
+      ]
+    )
+    index.pollForUnitChangesAndWait(isInitialScan: true)
+    var analyzedFileByPath: [String: SwiftFileInfo] = [:]
+    for fileInfo: SwiftFileInfo in fileInfos {
+      analyzedFileByPath[fileInfo.url.path] = fileInfo
+      analyzedFileByPath[privateVarAlias(fileInfo.url.path)] = fileInfo
+      analyzedFileByPath[varAlias(fileInfo.url.path)] = fileInfo
+    }
+    var qualifiedReferencesByPath: [String: Set<String>] = [:]
+    for fileURL: URL in indexedFiles {
+      let filePath: String = fileURL.path
+      guard let sourceFile: SwiftFileInfo = analyzedFileByPath[filePath] else {
+        continue
+      }
+      let occurrences: [SymbolOccurrence] = uniqueOccurrences(
+        [filePath, privateVarAlias(filePath), varAlias(filePath)].flatMap {
+          index.symbolOccurrences(inFilePath: $0)
+        }
+      )
+      for occurrence: SymbolOccurrence in occurrences {
+        guard occurrence.roles.contains(.reference),
+          occurrence.symbol.language == .swift,
+          !occurrence.location.isSystem
+        else {
+          continue
+        }
+        for definition: SymbolOccurrence in index.occurrences(
+          ofUSR: occurrence.symbol.usr,
+          roles: [.definition, .declaration]
+        ) {
+          let ownerPath: String = definition.location.path
+          guard analyzedFileByPath[ownerPath]?.url.path != sourceFile.url.path,
+            let ownerFile: SwiftFileInfo = analyzedFileByPath[ownerPath]
+          else {
+            continue
+          }
+          let symbolName: String = referenceSymbolName(occurrence.symbol.name)
+          if !symbolName.isEmpty {
+            qualifiedReferencesByPath[sourceFile.url.path, default: []].insert(
+              "\(ownerFile.moduleName).\(symbolName)"
+            )
+          }
+        }
+      }
+    }
+    return qualifiedReferencesByPath
+  }
+
+  private static func indexableSwiftFiles(in roots: [URL]) throws -> [URL] {
+    var files: Set<URL> = []
+    for root: URL in roots {
+      guard
+        let enumerator: FileManager.DirectoryEnumerator =
+          FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
+      else {
+        continue
+      }
+      for item in enumerator {
+        guard let fileURL: URL = item as? URL, fileURL.pathExtension == "swift" else {
+          continue
+        }
+        files.insert(fileURL.standardizedFileURL.resolvingSymlinksInPath())
+      }
+    }
+    return files.sorted { $0.path < $1.path }
+  }
+
+  private static func buildIndexStore(
+    for files: [URL],
+    sourceCopies: URL?,
+    indexStore: URL
+  ) throws {
+    let swiftcPath: String = try developerToolPath("swiftc")
+    let compileFiles: [URL]
+    if let sourceCopies {
+      compileFiles = try files.map { fileURL in
+        let relativePath: String = fileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let copiedURL: URL = sourceCopies.appending(path: relativePath)
+        try FileManager.default.createDirectory(
+          at: copiedURL.deletingLastPathComponent(),
+          withIntermediateDirectories: true
+        )
+        let source: String = try String(contentsOf: fileURL, encoding: .utf8)
+        try "import Foundation\n\(source)".write(to: copiedURL, atomically: true, encoding: .utf8)
+        return copiedURL
+      }
+    } else {
+      compileFiles = files
+    }
+    var buildOutput: String = ""
+    for (index, indexedFile) in compileFiles.enumerated() {
+      var arguments: [String] = [
+        "-typecheck",
+        "-parse-as-library",
+        "-continue-building-after-errors",
+        "-module-name",
+        "ArchLintIndexedSources",
+        "-index-store-path",
+        indexStore.path,
+        "-index-file",
+        "-index-file-path",
+        indexedFile.path,
+        "-index-unit-output-path",
+        "archlint-index-\(index).o",
+      ]
+      arguments.append(indexedFile.path)
+      arguments.append(contentsOf: compileFiles.filter { $0 != indexedFile }.map(\.path))
+      let output: String = try runProcess(
+        executable: swiftcPath,
+        arguments: arguments,
+        failureMessage: "swift index build failed",
+        allowNonZeroExit: true
+      )
+      if !output.isEmpty {
+        buildOutput.append(output)
+        buildOutput.append("\n")
+      }
+    }
+    guard containsIndexRecords(at: indexStore) else {
+      throw ArchLintError.semanticIndexUnavailable("swift index build failed: \(buildOutput)")
+    }
+  }
+
+  private static func indexStoreLibraryPath() throws -> String {
+    let toolchainRoot: URL = URL(fileURLWithPath: try developerToolPath("swiftc"))
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let libraryPath: String = toolchainRoot.appending(path: "lib/libIndexStore.dylib").path
+    guard FileManager.default.fileExists(atPath: libraryPath) else {
+      throw ArchLintError.semanticIndexUnavailable("missing libIndexStore.dylib at \(libraryPath)")
+    }
+    return libraryPath
+  }
+
+  private static func developerToolPath(_ toolName: String) throws -> String {
+    let output: String = try runProcess(
+      executable: "/usr/bin/xcrun",
+      arguments: ["--find", toolName],
+      failureMessage: "unable to locate \(toolName)"
+    )
+    return output.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  @discardableResult
+  private static func runProcess(
+    executable: String,
+    arguments: [String],
+    failureMessage: String,
+    allowNonZeroExit: Bool = false
+  ) throws -> String {
+    let process: Process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let outputPipe: Pipe = Pipe()
+    let errorPipe: Pipe = Pipe()
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      throw ArchLintError.semanticIndexUnavailable("\(failureMessage): \(error)")
+    }
+    let output: String = String(
+      data: outputPipe.fileHandleForReading.readDataToEndOfFile(),
+      encoding: .utf8
+    ) ?? ""
+    let errorOutput: String = String(
+      data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+      encoding: .utf8
+    ) ?? ""
+    let combinedOutput: String = [output, errorOutput]
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n")
+    guard process.terminationStatus == 0 || allowNonZeroExit else {
+      throw ArchLintError.semanticIndexUnavailable(
+        "\(failureMessage): \(combinedOutput)"
+      )
+    }
+    return combinedOutput
+  }
+
+  private static func containsIndexRecords(at indexStore: URL) -> Bool {
+    guard
+      let enumerator: FileManager.DirectoryEnumerator =
+        FileManager.default.enumerator(at: indexStore, includingPropertiesForKeys: [.isRegularFileKey])
+    else {
+      return false
+    }
+    for item in enumerator {
+      guard let fileURL: URL = item as? URL else {
+        continue
+      }
+      let parentName: String = fileURL.deletingLastPathComponent().lastPathComponent
+      let grandparentName: String = fileURL
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .lastPathComponent
+      if parentName == "units" || grandparentName == "records" {
+        return true
+      }
+    }
+    return false
+  }
+
+  private static func referenceSymbolName(_ name: String) -> String {
+    if let parenIndex: String.Index = name.firstIndex(of: "(") {
+      return String(name[..<parenIndex])
+    }
+    return name
+  }
+
+  private static func uniqueOccurrences(_ occurrences: [SymbolOccurrence]) -> [SymbolOccurrence] {
+    var seen: Set<String> = []
+    var result: [SymbolOccurrence] = []
+    for occurrence: SymbolOccurrence in occurrences {
+      let key: String = [
+        occurrence.location.path,
+        String(occurrence.location.line),
+        String(occurrence.location.utf8Column),
+        occurrence.symbol.usr,
+        String(occurrence.roles.rawValue),
+      ].joined(separator: "|")
+      if seen.insert(key).inserted {
+        result.append(occurrence)
+      }
+    }
+    return result
+  }
+
+  private static func privateVarAlias(_ path: String) -> String {
+    if path.hasPrefix("/var/") {
+      return "/private\(path)"
+    }
+    return path
+  }
+
+  private static func varAlias(_ path: String) -> String {
+    if path.hasPrefix("/private/var/") {
+      return String(path.dropFirst("/private".count))
+    }
+    return path
   }
 
   private static func parseModuleMetadata(_ source: String) -> ModuleMetadata {
@@ -999,6 +1312,7 @@ enum ArchLintError: Error, CustomStringConvertible {
   case missingArgumentValue(String)
   case missingRequiredArgument(String)
   case missingDirectory(String)
+  case semanticIndexUnavailable(String)
 
   var description: String {
     switch self {
@@ -1008,6 +1322,8 @@ enum ArchLintError: Error, CustomStringConvertible {
       return "\(argument) is required"
     case .missingDirectory(let path):
       return "missing directory \(path)"
+    case .semanticIndexUnavailable(let message):
+      return "swift semantic reference resolution unavailable: \(message)"
     }
   }
 }

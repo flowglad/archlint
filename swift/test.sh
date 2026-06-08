@@ -90,8 +90,6 @@ struct AddAccountRequest: Equatable {
 EOF
 assert_passes "$passing_fixture"
 
-# Patch 7 is schema-only for Swift: moduleName is present, while
-# qualifiedReferences stays empty until semantic resolution lands in patch 8.
 run_adapter "$passing_fixture" > "$tmp_root/passing-facts.json"
 assert_facts "$tmp_root/passing-facts.json" <<'PY'
 import json
@@ -100,7 +98,7 @@ import sys
 document = json.load(open(sys.argv[1], encoding="utf-8"))
 shell = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendClient.swift")][0]
 assert shell["moduleName"] == "HTTPMailBackendClient", shell
-assert shell["qualifiedReferences"] == [], shell
+assert "HTTPMailBackendDecider.decidePath" in shell["qualifiedReferences"], shell
 core = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendDecider.swift")][0]
 assert core["moduleName"] == "HTTPMailBackendDecider", core
 assert core["qualifiedReferences"] == [], core
@@ -146,9 +144,6 @@ final class HTTPMailBackendClient {
   }
 }
 EOF
-# PENDING: Patch 8
-# Semantic resolution should attribute the bare cross-file decidePathForRequest
-# call back to HTTPMailBackendDecider.decidePath and emit it in qualifiedReferences.
 run_adapter "$cross_file_bare_reference_fixture" > "$tmp_root/cross-file-bare-reference-facts.json"
 assert_facts "$tmp_root/cross-file-bare-reference-facts.json" <<'PY'
 import json
@@ -156,7 +151,9 @@ import sys
 
 document = json.load(open(sys.argv[1], encoding="utf-8"))
 shell = [item for item in document["files"] if item["path"].endswith("HTTPMailBackendClient.swift")][0]
-assert shell["qualifiedReferences"] == [], shell
+assert "HTTPMailBackendDecider.decidePath" in shell["qualifiedReferences"], shell
+assert "HTTPMailBackendClient.decidePathForRequest" not in shell["qualifiedReferences"], shell
+assert "HTTPMailBackendDecider.decidePathForRequest" not in shell["qualifiedReferences"], shell
 PY
 
 missing_core_reference_fixture="$(new_fixture missing-core-reference)"
