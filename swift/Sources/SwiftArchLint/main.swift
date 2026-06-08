@@ -411,7 +411,7 @@ enum SwiftArchLint {
         }
       )
       for occurrence: SymbolOccurrence in occurrences {
-        guard occurrence.roles.contains(.reference),
+        guard (occurrence.roles.contains(.reference) || occurrence.roles.contains(.call)),
           occurrence.symbol.language == .swift,
           !occurrence.location.isSystem
         else {
