@@ -11,7 +11,7 @@ let package = Package(
     .executable(name: "SwiftArchLint", targets: ["SwiftArchLint"])
   ],
   dependencies: [
-    .package(url: "https://github.com/swiftlang/indexstore-db.git", branch: "main"),
+    .package(url: "https://github.com/swiftlang/indexstore-db.git", revision: "cf29ef4e5e5243a3b6f518d72c6e527b5290375a"),
     .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.0"),
     .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "603.0.1")
   ],
