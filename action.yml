@@ -81,6 +81,12 @@ runs:
       # evaluate.py runs `dune exec`, which builds the adapter on demand against
       # the active switch, so no separate build step is needed here.
       run: opam install "$GITHUB_ACTION_PATH/ocaml" --deps-only --yes
+    - if: inputs.adapter == 'ocaml'
+      shell: bash
+      # The OCaml adapter reads typedtree artifacts from the consumer project,
+      # so it must be able to build that project too. Install consumer deps,
+      # including test deps, because test modules are part of the fact surface.
+      run: opam install "$GITHUB_WORKSPACE" --deps-only --with-test --yes
 
     # swift needs no setup step: GitHub's macOS runners ship the toolchain, and
     # evaluate.py builds the adapter via `swift run`. Run this adapter on a
