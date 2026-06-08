@@ -44,13 +44,16 @@
     "propertyCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["references", "interleaving", "generatedInputs"],
+      "required": ["references", "generatedInputs", "operationSequences"],
       "properties": {
         "references": { "$ref": "#/$defs/stringList" },
-        "interleaving": { "type": "boolean" },
         "generatedInputs": {
           "type": "array",
           "items": { "$ref": "#/$defs/generatedInput" }
+        },
+        "operationSequences": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/operationSequence" }
         }
       }
     },
@@ -61,6 +64,16 @@
       "properties": {
         "name": { "$ref": "#/$defs/nonEmptyString" },
         "uses": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "operationSequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "operations", "assertions"],
+      "properties": {
+        "input": { "$ref": "#/$defs/nonEmptyString" },
+        "operations": { "$ref": "#/$defs/stringList" },
+        "assertions": { "$ref": "#/$defs/stringList" }
       }
     },
     "sharedStateEvidence": {

@@ -63,12 +63,12 @@ if field == "propertyTestReferences":
         for check in matches[0]["propertyChecks"]
         for reference in check["references"]
     }
-elif field == "propertyInterleavingReferences":
+elif field == "propertyOperationSequenceReferences":
     references = {
         reference
         for check in matches[0]["propertyChecks"]
-        if check["interleaving"]
-        for reference in check["references"]
+        for sequence in check["operationSequences"]
+        for reference in sequence["operations"] + sequence["assertions"]
     }
 else:
     references = set(matches[0][field])
@@ -105,12 +105,12 @@ if field == "propertyTestReferences":
         for check in matches[0]["propertyChecks"]
         for reference in check["references"]
     }
-elif field == "propertyInterleavingReferences":
+elif field == "propertyOperationSequenceReferences":
     references = {
         reference
         for check in matches[0]["propertyChecks"]
-        if check["interleaving"]
-        for reference in check["references"]
+        for sequence in check["operationSequences"]
+        for reference in sequence["operations"] + sequence["assertions"]
     }
 else:
     references = set(matches[0][field])
@@ -927,7 +927,7 @@ assert_fact_refs_contain \
 assert_fact_refs_not_contain \
   "$ordinary_array_property_fixture" \
   "HTTPMailBackendDeciderPropertySuite.swift" \
-  "propertyInterleavingReferences" \
+  "propertyOperationSequenceReferences" \
   "decode"
 
 property_unreachable_helper_fixture="$(new_fixture property-unreachable-helper)"
@@ -1019,8 +1019,8 @@ EOF
 assert_fails_with "$non_decider_core_fixture" \
   "core module must have a same-domain test or stateTest module"
 
-state_test_without_interleavings_fixture="$(new_fixture state-test-without-interleavings)"
-cat > "$state_test_without_interleavings_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+state_test_without_operation_sequences_fixture="$(new_fixture state-test-without-operation-sequences)"
+cat > "$state_test_without_operation_sequences_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
 // @archlint.module stateTest
 // @archlint.domain backend.sqlite
 import PropertyBased
@@ -1028,18 +1028,18 @@ import Testing
 
 enum SQLiteMailSyncStateDeciderPropertySuite {
   @Test
-  static func roundTripInterleavingsProperty() async {
+  static func roundTripOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10)) { value in
       #expect(value == value)
     }
   }
 }
 EOF
-assert_fails_with "$state_test_without_interleavings_fixture" \
-  "stateTest module must contain property interleavings"
+assert_fails_with "$state_test_without_operation_sequences_fixture" \
+  "stateTest module must contain property operation sequences"
 
-state_test_interleavings_without_refs_fixture="$(new_fixture state-test-interleavings-without-refs)"
-cat > "$state_test_interleavings_without_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+state_test_operation_sequences_without_refs_fixture="$(new_fixture state-test-operation-sequences-without-refs)"
+cat > "$state_test_operation_sequences_without_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
 // @archlint.module stateTest
 // @archlint.domain backend.sqlite
 import PropertyBased
@@ -1047,7 +1047,7 @@ import Testing
 
 enum SQLiteMailSyncStateDeciderPropertySuite {
   @Test
-  static func roundTripInterleavingsProperty() async {
+  static func roundTripOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(value == value)
@@ -1056,11 +1056,11 @@ enum SQLiteMailSyncStateDeciderPropertySuite {
   }
 }
 EOF
-assert_fails_with "$state_test_interleavings_without_refs_fixture" \
-  "stateTest module must contain property interleavings"
+assert_fails_with "$state_test_operation_sequences_without_refs_fixture" \
+  "stateTest module must contain property operation sequences"
 
-state_test_interleavings_without_core_refs_fixture="$(new_fixture state-test-interleavings-without-core-refs)"
-cat > "$state_test_interleavings_without_core_refs_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
+state_test_operation_sequences_without_core_refs_fixture="$(new_fixture state-test-operation-sequences-without-core-refs)"
+cat > "$state_test_operation_sequences_without_core_refs_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
 // @archlint.module core
 // @archlint.domain backend.sqlite
 enum SQLiteMailSyncStateDecider {
@@ -1069,7 +1069,7 @@ enum SQLiteMailSyncStateDecider {
   }
 }
 EOF
-cat > "$state_test_interleavings_without_core_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+cat > "$state_test_operation_sequences_without_core_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
 // @archlint.module stateTest
 // @archlint.domain backend.sqlite
 import PropertyBased
@@ -1084,7 +1084,7 @@ enum SQLiteMailSyncStateDeciderPropertySuite {
   }
 
   @Test
-  static func unrelatedInterleavingsProperty() async {
+  static func unrelatedOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(helper(value) == value)
@@ -1097,8 +1097,8 @@ enum SQLiteMailSyncStateDeciderPropertySuite {
   }
 }
 EOF
-assert_fails_with "$state_test_interleavings_without_core_refs_fixture" \
-  "stateTest module interleavings must reference same-domain core decision APIs"
+assert_fails_with "$state_test_operation_sequences_without_core_refs_fixture" \
+  "stateTest module operation sequences must reference same-domain core decision APIs"
 
 state_test_without_state_module_fixture="$(new_fixture state-test-without-state-module)"
 cat > "$state_test_without_state_module_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
@@ -1118,7 +1118,7 @@ import Testing
 
 enum SQLiteMailSyncStateDeciderPropertySuite {
   @Test
-  static func reduceInterleavingsProperty() async {
+  static func reduceOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(SQLiteMailSyncStateDecider.reduce(value) == value)
@@ -1130,8 +1130,8 @@ EOF
 assert_fails_with "$state_test_without_state_module_fixture" \
   "stateTest module must have a same-domain state module"
 
-state_test_interleaving_refs_fixture="$(new_fixture state-test-interleaving-refs)"
-cat > "$state_test_interleaving_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
+state_test_operation_sequence_refs_fixture="$(new_fixture state-test-operation-sequence-refs)"
+cat > "$state_test_operation_sequence_refs_fixture/apps/ios/MailAppTests/SQLiteMailSyncStateDeciderPropertySuite.swift" <<'EOF'
 // @archlint.module stateTest
 // @archlint.domain backend.sqlite
 import PropertyBased
@@ -1139,7 +1139,7 @@ import Testing
 
 enum SQLiteMailSyncStateDeciderPropertySuite {
   @Test
-  static func roundTripInterleavingsProperty() async {
+  static func roundTripOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(helper(value) == value)
@@ -1153,13 +1153,13 @@ enum SQLiteMailSyncStateDeciderPropertySuite {
 }
 EOF
 assert_fact_refs_contain \
-  "$state_test_interleaving_refs_fixture" \
+  "$state_test_operation_sequence_refs_fixture" \
   "SQLiteMailSyncStateDeciderPropertySuite.swift" \
-  "propertyInterleavingReferences" \
+  "propertyOperationSequenceReferences" \
   "reduce"
 
-state_unrelated_to_interleavings_fixture="$(new_fixture state-unrelated-to-interleavings)"
-cat > "$state_unrelated_to_interleavings_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
+state_unrelated_to_operation_sequences_fixture="$(new_fixture state-unrelated-to-operation-sequences)"
+cat > "$state_unrelated_to_operation_sequences_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'
 // @archlint.module state
 // @archlint.domain backend.http
 import Foundation
@@ -1172,7 +1172,7 @@ actor FakeMailBackendClient {
   }
 }
 EOF
-cat > "$state_unrelated_to_interleavings_fixture/apps/ios/MailAppTests/HTTPMailBackendStatePropertySuite.swift" <<'EOF'
+cat > "$state_unrelated_to_operation_sequences_fixture/apps/ios/MailAppTests/HTTPMailBackendStatePropertySuite.swift" <<'EOF'
 // @archlint.module stateTest
 // @archlint.domain backend.http
 import PropertyBased
@@ -1180,7 +1180,7 @@ import Testing
 
 enum HTTPMailBackendStatePropertySuite {
   @Test
-  static func unrelatedInterleavingsProperty() async {
+  static func unrelatedOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(OtherDecider.reduce(value) == value)
@@ -1189,8 +1189,8 @@ enum HTTPMailBackendStatePropertySuite {
   }
 }
 EOF
-assert_fails_with "$state_unrelated_to_interleavings_fixture" \
-  "state module must reference a core decision API reached by same-domain property interleavings"
+assert_fails_with "$state_unrelated_to_operation_sequences_fixture" \
+  "state module must reference a core decision API reached by same-domain property operation sequences"
 
 state_without_stateful_apis_fixture="$(new_fixture state-without-stateful-apis)"
 cat > "$state_without_stateful_apis_fixture/apps/ios/MailApp/Backend/SQLiteMailSyncStateDecider.swift" <<'EOF'
@@ -1219,7 +1219,7 @@ import Testing
 
 enum SQLiteMailSyncStateDeciderPropertySuite {
   @Test
-  static func reduceInterleavingsProperty() async {
+  static func reduceOperationSequencesProperty() async {
     await propertyCheck(input: Gen.int(in: 0...10).array(of: 0...20)) { values in
       for value in values {
         #expect(SQLiteMailSyncStateDecider.reduce(value) == value)
@@ -1246,7 +1246,7 @@ actor FakeMailBackendClient {
 }
 EOF
 assert_fails_with "$shared_state_without_state_test_fixture" \
-  "state module must have a same-domain stateTest with property interleavings"
+  "state module must have a same-domain stateTest with property operation sequences"
 
 shared_state_outside_state_fixture="$(new_fixture shared-state-outside-state)"
 cat > "$shared_state_outside_state_fixture/apps/ios/MailApp/Backend/FakeMailBackendClient.swift" <<'EOF'

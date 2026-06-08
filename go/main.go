@@ -55,14 +55,20 @@ type sharedStateFact struct {
 }
 
 type propertyCheckFact struct {
-	References      []string             `json:"references"`
-	Interleaving    bool                 `json:"interleaving"`
-	GeneratedInputs []generatedInputFact `json:"generatedInputs"`
+	References         []string                `json:"references"`
+	GeneratedInputs    []generatedInputFact    `json:"generatedInputs"`
+	OperationSequences []operationSequenceFact `json:"operationSequences"`
 }
 
 type generatedInputFact struct {
 	Name string   `json:"name"`
 	Uses []string `json:"uses"`
+}
+
+type operationSequenceFact struct {
+	Input      string   `json:"input"`
+	Operations []string `json:"operations"`
+	Assertions []string `json:"assertions"`
 }
 
 type architectureMetadataFact struct {
@@ -230,12 +236,12 @@ func goArchitectureFileFact(path string) (architectureFileFact, []violation) {
 	propertyEvidence := goPropertyEvidence(syntaxFile)
 	if metadata.moduleType != "stateTest" {
 		for index := range propertyEvidence.checks {
-			propertyEvidence.checks[index].interleaving = false
+			propertyEvidence.checks[index].operationSequences = []goOperationSequenceEvidence{}
 		}
 	}
-		return architectureFileFact{
-			Path:                   path,
-			TestScope:              goTestScope(path),
+	return architectureFileFact{
+		Path:                   path,
+		TestScope:              goTestScope(path),
 		Metadata:               architectureMetadataForGo(metadata),
 		Imports:                imports,
 		Identifiers:            setToSortedSlice(identifiers),
@@ -695,14 +701,20 @@ type goPropertyEvidenceResult struct {
 }
 
 type goPropertyCheckEvidence struct {
-	references      map[string]struct{}
-	interleaving    bool
-	generatedInputs []goGeneratedInputEvidence
+	references         map[string]struct{}
+	generatedInputs    []goGeneratedInputEvidence
+	operationSequences []goOperationSequenceEvidence
 }
 
 type goGeneratedInputEvidence struct {
 	name string
 	uses map[string]struct{}
+}
+
+type goOperationSequenceEvidence struct {
+	input      string
+	operations map[string]struct{}
+	assertions map[string]struct{}
 }
 
 func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
@@ -731,9 +743,9 @@ func goPropertyEvidence(syntaxFile *ast.File) goPropertyEvidenceResult {
 				}
 			}
 			result.checks = append(result.checks, goPropertyCheckEvidence{
-				references:      references,
-				interleaving:    goFunctionHasSliceParameter(propertyFunction),
-				generatedInputs: goGeneratedInputEvidenceForProperty(propertyFunction, propertyFunctions),
+				references:         references,
+				generatedInputs:    goGeneratedInputEvidenceForProperty(propertyFunction, propertyFunctions),
+				operationSequences: goOperationSequencesForProperty(propertyFunction, propertyFunctions),
 			})
 			return true
 		})
@@ -745,9 +757,9 @@ func goPropertyCheckFacts(evidence goPropertyEvidenceResult) []propertyCheckFact
 	facts := make([]propertyCheckFact, 0, len(evidence.checks))
 	for _, check := range evidence.checks {
 		facts = append(facts, propertyCheckFact{
-			References:      setToSortedSlice(check.references),
-			Interleaving:    check.interleaving,
-			GeneratedInputs: goGeneratedInputFacts(check.generatedInputs),
+			References:         setToSortedSlice(check.references),
+			GeneratedInputs:    goGeneratedInputFacts(check.generatedInputs),
+			OperationSequences: goOperationSequenceFacts(check.operationSequences),
 		})
 	}
 	return facts
@@ -759,6 +771,18 @@ func goGeneratedInputFacts(evidence []goGeneratedInputEvidence) []generatedInput
 		facts = append(facts, generatedInputFact{
 			Name: input.name,
 			Uses: setToSortedSlice(input.uses),
+		})
+	}
+	return facts
+}
+
+func goOperationSequenceFacts(evidence []goOperationSequenceEvidence) []operationSequenceFact {
+	facts := make([]operationSequenceFact, 0, len(evidence))
+	for _, sequence := range evidence {
+		facts = append(facts, operationSequenceFact{
+			Input:      sequence.input,
+			Operations: setToSortedSlice(sequence.operations),
+			Assertions: setToSortedSlice(sequence.assertions),
 		})
 	}
 	return facts
@@ -893,6 +917,56 @@ func goGeneratedInputEvidenceForProperty(
 		}
 	}
 	return inputs
+}
+
+func goOperationSequencesForProperty(
+	propertyFunction *goPropertyFunction,
+	propertyFunctions map[string]goPropertyFunction,
+) []goOperationSequenceEvidence {
+	if propertyFunction == nil || propertyFunction.functionType == nil || propertyFunction.functionType.Params == nil {
+		return []goOperationSequenceEvidence{}
+	}
+	sequences := []goOperationSequenceEvidence{}
+	assertions := goExpandedReferences(goAPIReferencesFromNode(propertyFunction.body), propertyFunctions)
+	for _, field := range propertyFunction.functionType.Params.List {
+		if _, ok := field.Type.(*ast.ArrayType); !ok {
+			continue
+		}
+		for _, name := range field.Names {
+			if name.Name == "" || name.Name == "_" {
+				continue
+			}
+			operations := goOperationReferencesFromRangeOverInput(propertyFunction.body, name.Name, propertyFunctions)
+			if len(operations) == 0 {
+				continue
+			}
+			sequences = append(sequences, goOperationSequenceEvidence{
+				input:      name.Name,
+				operations: operations,
+				assertions: assertions,
+			})
+		}
+	}
+	return sequences
+}
+
+func goOperationReferencesFromRangeOverInput(
+	root ast.Node,
+	name string,
+	propertyFunctions map[string]goPropertyFunction,
+) map[string]struct{} {
+	operations := map[string]struct{}{}
+	ast.Inspect(root, func(node ast.Node) bool {
+		rangeStatement, ok := node.(*ast.RangeStmt)
+		if !ok || !goNodeContainsIdent(rangeStatement.X, name) {
+			return true
+		}
+		for reference := range goExpandedReferences(goAPIReferencesFromNode(rangeStatement.Body), propertyFunctions) {
+			operations[reference] = struct{}{}
+		}
+		return true
+	})
+	return operations
 }
 
 func goGeneratedInputUses(

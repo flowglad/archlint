@@ -83,7 +83,7 @@ cat > "$TMPDIR/test/test_state.ml" <<'ML'
 
 let suite =
   [
-    QCheck2.Test.make ~name:"interleaving"
+    QCheck2.Test.make ~name:"operation sequence"
       QCheck2.Gen.(list small_int)
       (fun xs -> List.for_all (fun x -> match Decision.decide x with _ -> true) xs);
   ]
@@ -98,13 +98,16 @@ document = json.load(open(sys.argv[1], encoding="utf-8"))
 checks_by_file = {item["path"]: item["propertyChecks"] for item in document["files"]}
 ordinary = [checks for path, checks in checks_by_file.items() if path.endswith("test_decision.ml")][0]
 state = [checks for path, checks in checks_by_file.items() if path.endswith("test_state.ml")][0]
-assert ordinary and ordinary[0]["interleaving"] is False, ordinary
+assert ordinary and ordinary[0]["operationSequences"] == [], ordinary
 assert ordinary[0]["generatedInputs"], ordinary
 assert ordinary[0]["generatedInputs"][0]["name"] == "xs", ordinary
 assert "decide" in ordinary[0]["generatedInputs"][0]["uses"], ordinary
-assert state and state[0]["interleaving"] is True, state
+assert state and state[0]["operationSequences"], state
 assert "decide" in state[0]["references"], state
 assert "decide" in state[0]["generatedInputs"][0]["uses"], state
+assert state[0]["operationSequences"][0]["input"] == "xs", state
+assert "decide" in state[0]["operationSequences"][0]["operations"], state
+assert "decide" in state[0]["operationSequences"][0]["assertions"], state
 handler = [item for item in document["files"] if item["path"].endswith("handler.ml")][0]
 assert "Unix" in handler["effectfulIdentifiers"], handler
 fuzz = [item for item in document["files"] if item["path"].endswith("fuzz_decision.ml")][0]

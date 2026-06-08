@@ -13,10 +13,15 @@ type metadata = {
 }
 
 type generated_input = { name : string; uses : string list }
+type operation_sequence = {
+  input : string;
+  operations : string list;
+  assertions : string list;
+}
 type property_check = {
   references : string list;
-  interleaving : bool;
   generated_inputs : generated_input list;
+  operation_sequences : operation_sequence list;
 }
 type shared_state = { kind : string; references : string list }
 
@@ -336,7 +341,7 @@ let rec expression_is_function expression =
   | Pexp_constraint (inner, _) | Pexp_coerce (inner, _, _) -> expression_is_function inner
   | _ -> false
 
-let rec expression_contains_interleaving_generator expression =
+let rec expression_contains_operation_sequence_generator expression =
   let found = ref false in
   let iterator =
     {
@@ -479,6 +484,21 @@ let generated_inputs_for_property facts body =
          |> List.filter is_bindable_name
          |> List.map (fun name -> { name; uses = generated_input_uses facts body name }))
 
+let operation_sequences_for_property facts body args generated_inputs =
+  if
+    List.exists
+      (fun (_label, argument) -> expression_contains_operation_sequence_generator argument)
+      args
+  then
+    let assertions =
+      expanded_api_references facts (api_references_in_expression body) StringSet.empty
+      |> set_to_list
+    in
+    generated_inputs
+    |> List.filter (fun input -> input.uses <> [])
+    |> List.map (fun input -> { input = input.name; operations = input.uses; assertions })
+  else []
+
 let rec collect_structure_item facts item =
   match item.pstr_desc with
   | Pstr_open open_decl ->
@@ -615,13 +635,14 @@ let collect_expression_facts facts expression =
                 | Some body -> generated_inputs_for_property facts body
                 | None -> []
               in
-              let interleaving =
-                List.exists
-                  (fun (_label, argument) -> expression_contains_interleaving_generator argument)
-                  args
+              let operation_sequences =
+                match property_body with
+                | Some body ->
+                    operation_sequences_for_property facts body args generated_inputs
+                | None -> []
               in
               facts.property_checks <-
-                { references; interleaving; generated_inputs } :: facts.property_checks
+                { references; generated_inputs; operation_sequences } :: facts.property_checks
         | Pexp_ifthenelse _ -> facts.control_flow <- add facts.control_flow "if"
         | Pexp_match _ -> facts.control_flow <- add facts.control_flow "match"
         | Pexp_for _ -> facts.control_flow <- add facts.control_flow "for"
@@ -741,12 +762,21 @@ let metadata_to_json metadata =
 let generated_input_to_json (input : generated_input) =
   `Assoc [ ("name", `String input.name); ("uses", json_string_list input.uses) ]
 
+let operation_sequence_to_json (sequence : operation_sequence) =
+  `Assoc
+    [
+      ("input", `String sequence.input);
+      ("operations", json_string_list sequence.operations);
+      ("assertions", json_string_list sequence.assertions);
+    ]
+
 let property_check_to_json (check : property_check) =
   `Assoc
     [
       ("references", json_string_list check.references);
-      ("interleaving", `Bool check.interleaving);
       ("generatedInputs", `List (List.map generated_input_to_json check.generated_inputs));
+      ( "operationSequences",
+        `List (List.map operation_sequence_to_json check.operation_sequences) );
     ]
 
 let shared_state_to_json (evidence : shared_state) =
@@ -829,7 +859,7 @@ let source_fact ~root:_ ~interfaces path =
       List.rev facts.property_checks
       |> List.map (fun check ->
              if metadata.module_type = "stateTest" then check
-             else { check with interleaving = false });
+             else { check with operation_sequences = [] });
     interface_logic_evidence =
       {
         function_bodies = set_to_list facts.function_bodies;

@@ -51,14 +51,32 @@ def generated_input(name="input", uses=None):
     return {"name": name, "uses": [] if uses is None else uses}
 
 
-def property_check(references=None, interleaving=False, generated_inputs=None):
+def operation_sequence(input_name="input", operations=None, assertions=None):
+    return {
+        "input": input_name,
+        "operations": [] if operations is None else operations,
+        "assertions": [] if assertions is None else assertions,
+    }
+
+
+def property_check(references=None, generated_inputs=None, operation_sequences=None):
     if generated_inputs is None:
         generated_inputs = [generated_input(uses=[] if references is None else references)]
     return {
         "references": [] if references is None else references,
-        "interleaving": interleaving,
         "generatedInputs": generated_inputs,
+        "operationSequences": [] if operation_sequences is None else operation_sequences,
     }
+
+
+def temporal_property_check(reference):
+    return property_check(
+        [reference],
+        generated_inputs=[generated_input("ops", uses=[reference])],
+        operation_sequences=[
+            operation_sequence("ops", operations=[reference], assertions=[reference])
+        ],
+    )
 
 
 class EvaluateTests(unittest.TestCase):
@@ -543,7 +561,7 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_state_module_requires_same_domain_interleaving_test(self):
+    def test_state_module_requires_same_domain_operation_sequence_test(self):
         state = source_file(
             path="/repo/Store.swift",
             metadata={"moduleType": "state", "domain": "backend.sqlite", "exemptReason": ""},
@@ -551,17 +569,17 @@ class EvaluateTests(unittest.TestCase):
         wrong_domain_test = source_file(
             path="/repo/StoreTests.swift",
             metadata={"moduleType": "stateTest", "domain": "mail.sync", "exemptReason": ""},
-            propertyChecks=[property_check(interleaving=True)],
+            propertyChecks=[temporal_property_check("SomeOtherDecider")],
         )
 
         violations = evaluate.evaluate([state, wrong_domain_test])
 
         self.assertIn(
-            "state module must have a same-domain stateTest with property interleavings",
+            "state module must have a same-domain stateTest with property operation sequences",
             [violation.message for violation in violations],
         )
 
-    def test_state_module_requires_reachable_same_domain_interleaving_api_reference(self):
+    def test_state_module_requires_reachable_same_domain_operation_sequence_api_reference(self):
         core = source_file(
             path="/repo/SQLiteStateDecider.swift",
             metadata={"moduleType": "core", "domain": "backend.sqlite", "exemptReason": ""},
@@ -578,22 +596,22 @@ class EvaluateTests(unittest.TestCase):
             imports=["PersistenceKit"],
             effectfulImports=["PersistenceKit"],
         )
-        unrelated_interleaving_test = source_file(
+        unrelated_operation_sequence_test = source_file(
             path="/repo/StoreTests.swift",
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["UnrelatedDecider"],
-            propertyChecks=[property_check(["UnrelatedDecider"], interleaving=True)],
+            propertyChecks=[temporal_property_check("UnrelatedDecider")],
         )
 
-        violations = evaluate.evaluate([core, state, unrelated_interleaving_test])
+        violations = evaluate.evaluate([core, state, unrelated_operation_sequence_test])
 
         self.assertIn(
-            "state module must reference a core decision API reached by same-domain property interleavings",
+            "state module must reference a core decision API reached by same-domain property operation sequences",
             [violation.message for violation in violations],
         )
 
-    def test_state_module_rejects_incidental_non_core_interleaving_api_reference(self):
+    def test_state_module_rejects_incidental_non_core_operation_sequence_api_reference(self):
         core = source_file(
             path="/repo/SQLiteStateDecider.swift",
             metadata={"moduleType": "core", "domain": "backend.sqlite", "exemptReason": ""},
@@ -608,20 +626,20 @@ class EvaluateTests(unittest.TestCase):
             metadata={"moduleType": "state", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStore", "Date"],
         )
-        incidental_interleaving_test = source_file(
+        incidental_operation_sequence_test = source_file(
             path="/repo/StoreTests.swift",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
-            propertyChecks=[property_check(["Date"], interleaving=True)],
+            propertyChecks=[temporal_property_check("Date")],
         )
 
-        violations = evaluate.evaluate([core, state, incidental_interleaving_test])
+        violations = evaluate.evaluate([core, state, incidental_operation_sequence_test])
 
         self.assertIn(
-            "state module must reference a core decision API reached by same-domain property interleavings",
+            "state module must reference a core decision API reached by same-domain property operation sequences",
             [violation.message for violation in violations],
         )
 
-    def test_state_module_accepts_reachable_same_domain_interleaving_api_reference(self):
+    def test_state_module_accepts_reachable_same_domain_operation_sequence_api_reference(self):
         core = source_file(
             path="/repo/SQLiteStateDecider.swift",
             metadata={"moduleType": "core", "domain": "backend.sqlite", "exemptReason": ""},
@@ -638,19 +656,19 @@ class EvaluateTests(unittest.TestCase):
             imports=["PersistenceKit"],
             effectfulImports=["PersistenceKit"],
         )
-        linked_interleaving_test = source_file(
+        linked_operation_sequence_test = source_file(
             path="/repo/StoreTests.swift",
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
-            propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
+            propertyChecks=[temporal_property_check("SQLiteStateDecider")],
         )
 
-        violations = evaluate.evaluate([core, state, linked_interleaving_test])
+        violations = evaluate.evaluate([core, state, linked_operation_sequence_test])
 
         self.assertEqual([], violations)
 
-    def test_state_test_interleavings_must_reference_reachable_apis(self):
+    def test_state_test_operation_sequence_without_operations_is_not_temporal_evidence(self):
         state_test = source_file(
             path="/repo/StoreTests.swift",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
@@ -658,8 +676,8 @@ class EvaluateTests(unittest.TestCase):
             propertyChecks=[
                 property_check(
                     [],
-                    interleaving=True,
                     generated_inputs=[generated_input("input", uses=["inputUse"])],
+                    operation_sequences=[operation_sequence("input")],
                 )
             ],
         )
@@ -667,26 +685,54 @@ class EvaluateTests(unittest.TestCase):
         violations = evaluate.evaluate([state_test])
 
         self.assertIn(
-            "stateTest module interleavings must reference reachable APIs",
+            "stateTest module must contain property operation sequences",
             [violation.message for violation in violations],
         )
 
-    def test_property_interleavings_may_only_appear_in_state_test_modules(self):
+    def test_property_operation_sequence_references_must_be_api_references(self):
+        source = source_file(
+            path="/repo/StoreTests.swift",
+            testScope="StoreTests",
+            metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
+            apiReferences=["inputUse"],
+            propertyChecks=[
+                property_check(
+                    ["inputUse"],
+                    generated_inputs=[generated_input("input", uses=["inputUse"])],
+                    operation_sequences=[
+                        operation_sequence(
+                            "input",
+                            operations=["hiddenOperation"],
+                            assertions=["inputUse"],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        violations = evaluate.evaluate([source])
+
+        self.assertIn(
+            "property operation sequence references must be reachable API references: hiddenOperation",
+            [violation.message for violation in violations],
+        )
+
+    def test_property_operation_sequences_may_only_appear_in_state_test_modules(self):
         test = source_file(
             path="/repo/CoreTests.swift",
             testScope="CoreTests",
             metadata={"moduleType": "test", "domain": "mail.sync", "exemptReason": ""},
-            propertyChecks=[property_check(["decideSync"], interleaving=True)],
+            propertyChecks=[temporal_property_check("decideSync")],
         )
 
         violations = evaluate.evaluate([test])
 
         self.assertIn(
-            "property interleavings may only appear in stateTest modules",
+            "property operation sequences may only appear in stateTest modules",
             [violation.message for violation in violations],
         )
 
-    def test_state_test_interleavings_must_reference_same_domain_core_decision_api(self):
+    def test_state_test_operation_sequences_must_reference_same_domain_core_decision_api(self):
         core = source_file(
             path="/repo/SQLiteStateDecider.swift",
             metadata={"moduleType": "core", "domain": "backend.sqlite", "exemptReason": ""},
@@ -701,13 +747,13 @@ class EvaluateTests(unittest.TestCase):
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["Date"],
-            propertyChecks=[property_check(["Date"], interleaving=True)],
+            propertyChecks=[temporal_property_check("Date")],
         )
 
         violations = evaluate.evaluate([core, state_test])
 
         self.assertIn(
-            "stateTest module interleavings must reference same-domain core decision APIs",
+            "stateTest module operation sequences must reference same-domain core decision APIs",
             [violation.message for violation in violations],
         )
 
@@ -726,7 +772,7 @@ class EvaluateTests(unittest.TestCase):
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
-            propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
+            propertyChecks=[temporal_property_check("SQLiteStateDecider")],
         )
 
         violations = evaluate.evaluate([core, state_test])
@@ -736,7 +782,7 @@ class EvaluateTests(unittest.TestCase):
             [violation.message for violation in violations],
         )
 
-    def test_state_test_interleavings_accept_same_domain_core_decision_api_reference(self):
+    def test_state_test_operation_sequences_accept_same_domain_core_decision_api_reference(self):
         core = source_file(
             path="/repo/SQLiteStateDecider.swift",
             metadata={"moduleType": "core", "domain": "backend.sqlite", "exemptReason": ""},
@@ -762,7 +808,7 @@ class EvaluateTests(unittest.TestCase):
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
             apiReferences=["SQLiteStateDecider"],
-            propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
+            propertyChecks=[temporal_property_check("SQLiteStateDecider")],
         )
 
         violations = evaluate.evaluate([core, state, state_test])
@@ -787,7 +833,7 @@ class EvaluateTests(unittest.TestCase):
             path="/repo/StoreTests.swift",
             testScope="StoreTests",
             metadata={"moduleType": "stateTest", "domain": "backend.sqlite", "exemptReason": ""},
-            propertyChecks=[property_check(["SQLiteStateDecider"], interleaving=True)],
+            propertyChecks=[temporal_property_check("SQLiteStateDecider")],
         )
 
         violations = evaluate.evaluate([core, state, state_test])

@@ -107,11 +107,11 @@ Domain names must use lowercase alphanumeric segments separated by `.` or `-`, s
 
 `shell` modules contain effectful handlers. They execute decisions from same-domain `core` modules and should not contain business branching that could have been decided by the pure layer.
 
-`state` modules own shared mutable state. They create an obligation to prove interleaving invariants with generated operation sequences.
+`state` modules own shared mutable state. They create an obligation to prove temporal invariants with generated operation sequences.
 
 `test` modules contain ordinary tests and property tests for same-domain `core` modules.
 
-`stateTest` modules contain property interleavings tests for same-domain `state` modules. A `stateTest` domain must have at least one corresponding `state` module.
+`stateTest` modules contain generated operation-sequence properties for same-domain `state` modules. A `stateTest` domain must have at least one corresponding `state` module.
 
 `interface` modules define vocabulary and contracts only. They must not contain concrete business logic or computed values.
 
@@ -119,7 +119,7 @@ Domain names must use lowercase alphanumeric segments separated by `.` or `-`, s
 
 `exempt` modules are narrow escape hatches. Every exemption must declare an allowed reason.
 
-Exemption reasons are not module types. They may have shallow admissibility checks that prove the escape hatch is plausible, but they must not create ordinary architecture obligations such as domain participation, shell-to-core linkage, property-test requirements, or state interleaving requirements. If a reason needs those obligations, promote it to a real `@archlint.module` value instead of expanding the exemption.
+Exemption reasons are not module types. They may have shallow admissibility checks that prove the escape hatch is plausible, but they must not create ordinary architecture obligations such as domain participation, shell-to-core linkage, property-test requirements, or state operation sequence requirements. If a reason needs those obligations, promote it to a real `@archlint.module` value instead of expanding the exemption.
 
 ## Enforcement Model
 
@@ -133,10 +133,10 @@ The repository mechanically enforces the decision/handler split by induction:
 6. Every `core` module must be backed by same-domain `test` or `stateTest` modules that include at least one property test.
 7. Core module property tests must reference every API in the core module decision surface.
 8. `state` modules must actually own stateful APIs: shared mutable state, persistent state APIs, database/keychain/filesystem APIs, or another effectful state boundary.
-9. `state` modules must be backed by at least one same-domain `stateTest` with property interleavings.
-10. A `state` module is not covered merely because an unrelated same-domain interleaving exists. The state module must structurally reference at least one same-domain `core` decision API reached by property interleavings.
-11. `stateTest` modules must themselves contain property interleavings that reach same-domain `core` decision APIs; ordinary property tests must use `test`.
-12. Property interleavings may only be emitted by `stateTest` modules. A generated array or slice inside an ordinary `test` module is still just a property input, not an operation-sequence invariant.
+9. `state` modules must be backed by at least one same-domain `stateTest` with property operation sequences.
+10. A `state` module is not covered merely because an unrelated same-domain operation sequence exists. The state module must structurally reference at least one same-domain `core` decision API reached by property operation sequences.
+11. `stateTest` modules must themselves contain property operation sequences that reach same-domain `core` decision APIs; ordinary property tests must use `test`.
+12. Property operation sequences may only be emitted by `stateTest` modules. A generated array or slice inside an ordinary `test` module is still just a property input, not an operation-sequence invariant.
 13. `interface` modules define vocabulary and contracts only; they must not contain concrete business logic or computed values.
 14. `value` modules are non-effectful value vocabulary with optional simple derived properties; they must not become service, effect-boundary, state-owner, branching, or callable decision code.
 15. `core` and `value` modules must not structurally reference same-domain implementation surfaces declared by `shell`, `state`, or `exempt` modules.
@@ -147,11 +147,11 @@ Shell-to-core linkage is deliberately narrower than "mentions any exported type 
 
 Property tests are not optional decoration for core modules. A decider or Go decision module without a property-bearing, same-domain `test` or `stateTest` module should fail architecture conformance even when it has example tests. Adding a new public decision API to an already-tested core module creates new property-test coverage obligations for that specific API.
 
-Shared mutable state must not be implicit. Mutex-protected stores, actor-owned mutable state, database queues, keychain/user-defaults backed stores, and observable app models should live in `state` modules. That label is intentionally loud: it creates an obligation to prove interleaving invariants with generated operation sequences.
+Shared mutable state must not be implicit. Mutex-protected stores, actor-owned mutable state, database queues, keychain/user-defaults backed stores, and observable app models should live in `state` modules. That label is intentionally loud: it creates an obligation to prove temporal invariants with generated operation sequences.
 
 `state` is also a positive structural claim. A file with no shared mutable state and no effectful state boundary cannot be labeled `state` merely to opt into or route around state-test obligations. Pure state transition logic belongs in `core`; inert data belongs in `value`; effectful non-state handlers belong in `shell`.
 
-State coverage is deliberately structural. A `stateTest` produces interleaving `propertyChecks` from APIs reachable inside generated operation-sequence properties, including same-file helpers called by those properties. Ordinary `test` modules never emit interleaving property checks; generated arrays, slices, bytes, and strings are common property inputs and are not sufficient evidence of temporal interleavings without the `stateTest` module marker. Those interleavings must reach same-domain `core` decision surfaces, and the `stateTest` domain must contain a real `state` module. A `state` module only satisfies its interleaving obligation when its own `apiReferences` intersect same-domain interleaving references derived from `propertyChecks` and same-domain `core` decision surfaces. This lets handlers and stores satisfy the rule by calling the pure decider or model operation that the interleaving test exercises, while rejecting broad domains, unrelated state tests, orphan `stateTest` labels, and incidental shared value names such as `State`, `Date`, or `String`.
+State coverage is deliberately structural. A `stateTest` produces `propertyChecks[].operationSequences` from APIs reachable inside generated operation-sequence properties, including same-file helpers called by those properties. Ordinary `test` modules never emit operation sequences; generated arrays, slices, bytes, and strings are common property inputs and are not sufficient evidence of temporal behavior without operations and assertions tied to the generated input. Those operation sequences must reach same-domain `core` decision surfaces, and the `stateTest` domain must contain a real `state` module. A `state` module only satisfies its operation-sequence obligation when its own `apiReferences` intersect same-domain operation-sequence references and same-domain `core` decision surfaces. This lets handlers and stores satisfy the rule by calling the pure decider or model operation that the operation-sequence test exercises, while rejecting broad domains, unrelated state tests, orphan `stateTest` labels, and incidental shared value names such as `State`, `Date`, or `String`.
 
 ## Exemptions
 
@@ -204,11 +204,17 @@ Each file fact includes:
   "propertyChecks": [
     {
       "references": ["decideSync"],
-      "interleaving": false,
       "generatedInputs": [
         {
           "name": "input",
           "uses": ["decideSync"]
+        }
+      ],
+      "operationSequences": [
+        {
+          "input": "ops",
+          "operations": ["applyOp", "decideSync"],
+          "assertions": ["checkInvariant"]
         }
       ]
     }
@@ -223,7 +229,7 @@ Each file fact includes:
 }
 ```
 
-Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, whether that property is an operation-sequence `interleaving`, and the `generatedInputs` observed in the property body. Each generated input reports structural API `uses` where that generated value appears, including ordinary call-graph expansion through helpers when the adapter can prove it structurally. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage and interleaving coverage only from checks with generated-input use evidence, then compares interleaving references against same-domain `state` module `apiReferences` and same-domain `core` `decisionSurface`; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
+Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, the `generatedInputs` observed in the property body, and any generated `operationSequences`. Each generated input reports structural API `uses` where that generated value appears, including ordinary call-graph expansion through helpers when the adapter can prove it structurally. Each operation sequence reports the generated `input` that controls the trace, the operation APIs reached while applying that trace, and assertion/postcondition APIs reached by the same property. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage from generated-input use evidence and state coverage from operation-sequence evidence; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
 
 Effect evidence is also normalized. Adapters own language-specific classification of effectful dependencies, frameworks, and framework types, but they emit the matched values as `effectfulImports` and `effectfulIdentifiers`. The evaluator derives booleans from those structured lists. Do not add adapter-emitted `hasEffectful...` booleans.
 
@@ -231,11 +237,11 @@ Shared mutable state evidence follows the same shape. Adapters own language-spec
 
 Interface and value logic evidence is normalized too. Adapters emit `interfaceLogicEvidence` lists naming the declarations or syntax classes that caused the evidence, such as `functionBodies`, `derivedValueBodies`, `controlFlow`, or `imperativeDeclarations`; the evaluator derives the corresponding `has...` checks from whether those lists are empty. Do not add adapter-emitted `hasFunctionBodies`-style booleans.
 
-Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `constructorBodies`, and `derivedValueBodies` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `propertyChecks[].generatedInputs[].uses` entry must also appear in `apiReferences`, because generated-input uses describe reachable call-site evidence for a specific generated value. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`. Interleaving references are not emitted as a separate list; they are derived from checks where `interleaving` is true and at least one generated input has structural uses.
+Reference evidence must be internally consistent. Every `decisionSurface`, `propertyTestSurface`, `decisionProducts`, and `decisionReferences` entry must also appear in the file's structural `identifiers`, because those fields describe declarations or declaration-derived values. Every `functionBodies`, `constructorBodies`, and `derivedValueBodies` entry must also appear in the file's structural `identifiers`. Every `propertyChecks[].references` entry must also appear in the file's structural `apiReferences`, because property checks describe reachable call-site evidence. Every `propertyChecks[].generatedInputs[].uses` entry must also appear in `apiReferences`, because generated-input uses describe reachable call-site evidence for a specific generated value. Every `propertyChecks[].operationSequences[].operations` and `propertyChecks[].operationSequences[].assertions` entry must also appear in `apiReferences`, because operation sequences describe reachable call-site evidence for a generated trace. Every operation sequence must refer to a generated input emitted by the same property check. Every `effectfulImports` entry must appear in `imports`, and every `effectfulIdentifiers` entry must appear in `identifiers`.
 
 Fact emission should also avoid stringly typed shortcuts. Adapters should report structural evidence from language parsers or dependency APIs: declarations, imports, member accesses, property-wrapper attributes, call expressions, exported APIs, and generated-input shapes. They should not infer facts from filename prose, comments, test names, or suffixes when the language ecosystem exposes a stronger structural signal. Adapters also should not emit policy violation text; they emit facts, and the shared evaluator owns rule messages.
 
-Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies and backed by generated-input use, not to example tests or unrelated helper functions that merely live in the same source file. A repeated constant property such as a unit generator with `fun ()` or `_ in` may still be a useful regression assertion, but it does not satisfy generated property coverage. Property interleaving evidence is tied to generated operation-sequence inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements, Go `if`/`switch`/loop/select statements, and OCaml `if`/`match`/loop expressions. Shared-state evidence is emitted from language AST nodes such as Swift actor stored `var` members, Go sync types, or OCaml top-level state allocations and mutable fields, not from source-text substring scans.
+Property-test evidence is tied to known property-testing API calls, not to a test name containing `Property`. Property coverage is tied to API references reachable from generated property bodies and backed by generated-input use, not to example tests or unrelated helper functions that merely live in the same source file. A repeated constant property such as a unit generator with `fun ()` or `_ in` may still be a useful regression assertion, but it does not satisfy generated property coverage. Operation-sequence evidence is tied to generated trace inputs in `stateTest` modules, not to an `Interleavings` word in a declaration name or any generated collection inside an ordinary `test` module. These facts are emitted as `propertyChecks`, not as pre-unioned booleans and reference lists. Control-flow evidence is emitted from AST nodes such as Swift `if`/`switch`/loop statements, Go `if`/`switch`/loop/select statements, and OCaml `if`/`match`/loop expressions. Shared-state evidence is emitted from language AST nodes such as Swift actor stored `var` members, Go sync types, or OCaml top-level state allocations and mutable fields, not from source-text substring scans.
 
 The fact schema is intentionally strict:
 

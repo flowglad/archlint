@@ -71,11 +71,22 @@ class GeneratedInput:
 
 
 @dataclass(frozen=True)
+class OperationSequence:
+    input: str
+    operations: set[str]
+    assertions: set[str]
+    references: set[str]
+    is_temporal_evidence: bool
+
+
+@dataclass(frozen=True)
 class PropertyCheck:
     references: set[str]
-    interleaving: bool
     generated_inputs: tuple[GeneratedInput, ...]
+    operation_sequences: tuple[OperationSequence, ...]
     has_generated_input_use: bool
+    temporal_references: set[str]
+    has_temporal_evidence: bool
 
 
 @dataclass(frozen=True)
@@ -105,8 +116,8 @@ class SourceFile:
     property_checks: tuple[PropertyCheck, ...]
     has_property_test: bool
     property_test_references: set[str]
-    has_property_interleavings: bool
-    property_interleaving_references: set[str]
+    has_operation_sequences: bool
+    operation_sequence_references: set[str]
     interface_logic_evidence: InterfaceLogicEvidence
 
 
@@ -254,19 +265,40 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
     property_checks = tuple(
         PropertyCheck(
             references=set(check["references"]),
-            interleaving=check["interleaving"],
             generated_inputs=tuple(
                 GeneratedInput(name=input_item["name"], uses=set(input_item["uses"]))
                 for input_item in check["generatedInputs"]
             ),
+            operation_sequences=tuple(
+                OperationSequence(
+                    input=sequence["input"],
+                    operations=set(sequence["operations"]),
+                    assertions=set(sequence["assertions"]),
+                    references=set(sequence["operations"]) | set(sequence["assertions"]),
+                    is_temporal_evidence=bool(sequence["operations"]) and bool(sequence["assertions"]),
+                )
+                for sequence in check["operationSequences"]
+            ),
             has_generated_input_use=any(input_item["uses"] for input_item in check["generatedInputs"]),
+            temporal_references=set().union(
+                *(
+                    set(sequence["operations"]) | set(sequence["assertions"])
+                    for sequence in check["operationSequences"]
+                    if sequence["operations"] and sequence["assertions"]
+                ),
+                set(),
+            ),
+            has_temporal_evidence=any(
+                sequence["operations"] and sequence["assertions"]
+                for sequence in check["operationSequences"]
+            ),
         )
         for check in item["propertyChecks"]
     )
     meaningful_property_checks = tuple(check for check in property_checks if check.has_generated_input_use)
     property_test_references = set().union(*(check.references for check in meaningful_property_checks), set())
-    property_interleaving_references = set().union(
-        *(check.references for check in meaningful_property_checks if check.interleaving),
+    operation_sequence_references = set().union(
+        *(check.temporal_references for check in property_checks if check.has_temporal_evidence),
         set(),
     )
     shared_state = tuple(
@@ -300,8 +332,8 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         property_checks=property_checks,
         has_property_test=bool(property_checks),
         property_test_references=property_test_references,
-        has_property_interleavings=any(check.interleaving for check in meaningful_property_checks),
-        property_interleaving_references=property_interleaving_references,
+        has_operation_sequences=any(check.has_temporal_evidence for check in property_checks),
+        operation_sequence_references=operation_sequence_references,
         interface_logic_evidence=InterfaceLogicEvidence(
             function_bodies=set(interface_logic_evidence["functionBodies"]),
             constructor_bodies=set(interface_logic_evidence["constructorBodies"]),
@@ -380,6 +412,40 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
                     source_file.path,
                     "property generated input uses must be reachable API references: "
                     + ", ".join(generated_input_uses_outside_api_references),
+                )
+            )
+        generated_input_names = {
+            generated_input.name
+            for check in source_file.property_checks
+            for generated_input in check.generated_inputs
+        }
+        operation_sequence_inputs = {
+            sequence.input
+            for check in source_file.property_checks
+            for sequence in check.operation_sequences
+        }
+        unknown_operation_sequence_inputs = sorted(operation_sequence_inputs - generated_input_names)
+        if unknown_operation_sequence_inputs:
+            violations.append(
+                Violation(
+                    source_file.path,
+                    "property operation sequences must reference generated inputs: "
+                    + ", ".join(unknown_operation_sequence_inputs),
+                )
+            )
+        operation_sequence_references = set().union(
+            *(sequence.references for check in source_file.property_checks for sequence in check.operation_sequences),
+            set(),
+        )
+        operation_sequence_references_outside_api_references = sorted(
+            operation_sequence_references - source_file.api_references
+        )
+        if operation_sequence_references_outside_api_references:
+            violations.append(
+                Violation(
+                    source_file.path,
+                    "property operation sequence references must be reachable API references: "
+                    + ", ".join(operation_sequence_references_outside_api_references),
                 )
             )
         surface_outside_identifiers = sorted(source_file.decision_surface - source_file.identifiers)
@@ -554,8 +620,8 @@ def evaluate_effect_boundaries(files: list[SourceFile]) -> list[Violation]:
             violations.append(
                 Violation(source_file.path, "shared mutable state may only appear in state, test, or stateTest modules")
             )
-        if source_file.has_property_interleavings and module_type != "stateTest":
-            violations.append(Violation(source_file.path, "property interleavings may only appear in stateTest modules"))
+        if source_file.has_operation_sequences and module_type != "stateTest":
+            violations.append(Violation(source_file.path, "property operation sequences may only appear in stateTest modules"))
     return violations
 
 
@@ -691,7 +757,7 @@ def evaluate_state_modules(files: list[SourceFile]) -> list[Violation]:
     state_tests_by_domain = {
         source_file.metadata.domain
         for source_file in files
-        if source_file.metadata.module_type == "stateTest" and source_file.has_property_interleavings
+        if source_file.metadata.module_type == "stateTest" and source_file.has_operation_sequences
     }
     core_decision_references_by_domain: dict[str, set[str]] = {}
     for source_file in files:
@@ -701,14 +767,14 @@ def evaluate_state_modules(files: list[SourceFile]) -> list[Violation]:
             source_file.decision_surface
         )
 
-    interleaving_references_by_domain: dict[str, set[str]] = {}
+    operation_sequence_references_by_domain: dict[str, set[str]] = {}
     for source_file in files:
         if source_file.metadata.module_type != "stateTest":
             continue
-        if not source_file.has_property_interleavings:
+        if not source_file.has_operation_sequences:
             continue
-        interleaving_references_by_domain.setdefault(source_file.metadata.domain, set()).update(
-            source_file.property_interleaving_references
+        operation_sequence_references_by_domain.setdefault(source_file.metadata.domain, set()).update(
+            source_file.operation_sequence_references
         )
 
     violations: list[Violation] = []
@@ -718,11 +784,11 @@ def evaluate_state_modules(files: list[SourceFile]) -> list[Violation]:
                 violations.append(
                     Violation(
                         source_file.path,
-                        "state module must have a same-domain stateTest with property interleavings",
+                        "state module must have a same-domain stateTest with property operation sequences",
                     )
                 )
                 continue
-            tested_references = interleaving_references_by_domain.get(source_file.metadata.domain, set())
+            tested_references = operation_sequence_references_by_domain.get(source_file.metadata.domain, set())
             core_decision_references = core_decision_references_by_domain.get(source_file.metadata.domain, set())
             covered_decision_references = source_file.api_references.intersection(
                 tested_references,
@@ -732,15 +798,15 @@ def evaluate_state_modules(files: list[SourceFile]) -> list[Violation]:
                 violations.append(
                     Violation(
                         source_file.path,
-                        "state module must reference a core decision API reached by same-domain property interleavings",
+                        "state module must reference a core decision API reached by same-domain property operation sequences",
                     )
                 )
         if source_file.metadata.module_type == "stateTest":
-            if not source_file.has_property_interleavings:
-                violations.append(Violation(source_file.path, "stateTest module must contain property interleavings"))
-            elif not source_file.property_interleaving_references:
+            if not source_file.has_operation_sequences:
+                violations.append(Violation(source_file.path, "stateTest module must contain property operation sequences"))
+            elif not source_file.operation_sequence_references:
                 violations.append(
-                    Violation(source_file.path, "stateTest module interleavings must reference reachable APIs")
+                    Violation(source_file.path, "stateTest module operation sequences must reference reachable APIs")
                 )
             else:
                 if source_file.metadata.domain not in state_modules_by_domain:
@@ -748,11 +814,11 @@ def evaluate_state_modules(files: list[SourceFile]) -> list[Violation]:
                         Violation(source_file.path, "stateTest module must have a same-domain state module")
                     )
                 core_decision_references = core_decision_references_by_domain.get(source_file.metadata.domain, set())
-                if not source_file.property_interleaving_references.intersection(core_decision_references):
+                if not source_file.operation_sequence_references.intersection(core_decision_references):
                     violations.append(
                         Violation(
                             source_file.path,
-                            "stateTest module interleavings must reference same-domain core decision APIs",
+                            "stateTest module operation sequences must reference same-domain core decision APIs",
                         )
                     )
     return violations

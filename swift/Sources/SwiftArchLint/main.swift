@@ -132,13 +132,19 @@ struct SharedStateFact: Encodable {
 
 struct PropertyCheckFact: Encodable {
   let references: [String]
-  let interleaving: Bool
   let generatedInputs: [GeneratedInputFact]
+  let operationSequences: [OperationSequenceFact]
 }
 
 struct GeneratedInputFact: Encodable {
   let name: String
   let uses: [String]
+}
+
+struct OperationSequenceFact: Encodable {
+  let input: String
+  let operations: [String]
+  let assertions: [String]
 }
 
 struct MetadataFact: Encodable {
@@ -304,8 +310,8 @@ enum SwiftArchLint {
         : visitor.propertyChecks.map { check in
           PropertyCheckFact(
             references: check.references,
-            interleaving: false,
-            generatedInputs: check.generatedInputs
+            generatedInputs: check.generatedInputs,
+            operationSequences: []
           )
         }
     )
@@ -490,14 +496,17 @@ final class ArchitectureVisitor: SyntaxVisitor {
       from: referenceVisitor.apiReferences,
       visited: []
     )
-    let isInterleaving: Bool = node.arguments.contains(where: {
+    let hasOperationSequenceGenerator: Bool = node.arguments.contains(where: {
       expressionContainsMemberAccess($0.expression, named: "array")
     })
+    let generatedInputs: [GeneratedInputFact] = generatedInputFacts(for: node)
     propertyChecks.append(
       PropertyCheckFact(
         references: Array(Set(expandedReferences)).sorted(),
-        interleaving: isInterleaving,
-        generatedInputs: generatedInputFacts(for: node)
+        generatedInputs: generatedInputs,
+        operationSequences: hasOperationSequenceGenerator
+          ? operationSequences(from: generatedInputs, assertions: expandedReferences)
+          : []
       )
     )
     return .visitChildren
@@ -677,6 +686,22 @@ final class ArchitectureVisitor: SyntaxVisitor {
         uses: Array(
           Set(expandedAPIReferences(from: visitor.uses, visited: []))
         ).sorted()
+      )
+    }
+  }
+
+  private func operationSequences(
+    from generatedInputs: [GeneratedInputFact],
+    assertions: [String]
+  ) -> [OperationSequenceFact] {
+    generatedInputs.compactMap { input in
+      if input.uses.isEmpty {
+        return nil
+      }
+      return OperationSequenceFact(
+        input: input.name,
+        operations: input.uses,
+        assertions: Array(Set(assertions)).sorted()
       )
     }
   }

@@ -646,7 +646,7 @@ func TestDecideSync(t *testing.T) {
 	assertNoViolations(t, lintBackendArchitecture(backendRoot))
 }
 
-func TestGoArchitectureFileFactEmitsPropertyAndInterleavingReferencesFromReachableHelpers(t *testing.T) {
+func TestGoArchitectureFileFactEmitsPropertyAndOperationSequenceReferencesFromReachableHelpers(t *testing.T) {
 	repoRoot := t.TempDir()
 	path := filepath.Join(repoRoot, "apps/backend/internal/mail/sync_decision_test.go")
 	writeFixtureFile(t, repoRoot, "apps/backend/internal/mail/sync_decision_test.go", `// @archlint.module stateTest
@@ -658,7 +658,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecideSyncInterleavingsProperty(t *testing.T) {
+func TestDecideSyncOperationSequencesProperty(t *testing.T) {
 	property := func(inputs []bool) bool {
 		for _, input := range inputs {
 			if !helper(input) {
@@ -687,14 +687,16 @@ func unrelated() bool {
 	if len(fileFact.PropertyChecks) != 1 {
 		t.Fatalf("expected one property check, got %#v", fileFact.PropertyChecks)
 	}
-	if !fileFact.PropertyChecks[0].Interleaving {
-		t.Fatal("expected stateTest property check to emit interleaving evidence")
+	if len(fileFact.PropertyChecks[0].OperationSequences) == 0 {
+		t.Fatal("expected stateTest property check to emit operation sequence evidence")
 	}
+	assertStringSliceContains(t, fileFact.PropertyChecks[0].OperationSequences[0].Operations, "DecideSync")
+	assertStringSliceContains(t, fileFact.PropertyChecks[0].OperationSequences[0].Assertions, "DecideSync")
 	assertStringSliceContains(t, fileFact.PropertyChecks[0].References, "DecideSync")
 	assertStringSliceDoesNotContain(t, fileFact.PropertyChecks[0].References, "DecideUnrelated")
 }
 
-func TestGoArchitectureFileFactDoesNotEmitInterleavingsFromOrdinaryArrayPropertyTest(t *testing.T) {
+func TestGoArchitectureFileFactDoesNotEmitOperationSequencesFromOrdinaryArrayPropertyTest(t *testing.T) {
 	repoRoot := t.TempDir()
 	path := filepath.Join(repoRoot, "apps/backend/internal/mail/sync_decision_test.go")
 	writeFixtureFile(t, repoRoot, "apps/backend/internal/mail/sync_decision_test.go", `// @archlint.module test
@@ -726,8 +728,8 @@ func DecideSync(inputs []byte) bool {
 	if len(fileFact.PropertyChecks) != 1 {
 		t.Fatalf("expected one property check, got %#v", fileFact.PropertyChecks)
 	}
-	if fileFact.PropertyChecks[0].Interleaving {
-		t.Fatal("ordinary test module emitted property interleavings")
+	if len(fileFact.PropertyChecks[0].OperationSequences) != 0 {
+		t.Fatal("ordinary test module emitted operation sequence evidence")
 	}
 	assertStringSliceContains(t, fileFact.PropertyChecks[0].References, "DecideSync")
 }
@@ -926,7 +928,7 @@ func TestDecideSyncProperty() {
 	})
 }
 
-func TestLintBackendArchitectureRejectsStateTestWithoutInterleavings(t *testing.T) {
+func TestLintBackendArchitectureRejectsStateTestWithoutOperationSequences(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/decision_test.go": `// @archlint.module stateTest
 // @archlint.domain mail
@@ -937,7 +939,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecisionInterleavingsProperty(t *testing.T) {
+func TestDecisionOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(input string) bool { return input == input }, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -946,11 +948,11 @@ func TestDecisionInterleavingsProperty(t *testing.T) {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"stateTest module must contain property interleavings",
+		"stateTest module must contain property operation sequences",
 	})
 }
 
-func TestLintBackendArchitectureRejectsInterleavingsWithoutReachableAPIReferences(t *testing.T) {
+func TestLintBackendArchitectureRejectsOperationSequencesWithoutReachableAPIReferences(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/decision_test.go": `// @archlint.module stateTest
 // @archlint.domain mail
@@ -961,7 +963,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecisionInterleavingsProperty(t *testing.T) {
+func TestDecisionOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(inputs []uint8) bool {
 		for _, input := range inputs {
 			if input > 255 {
@@ -977,11 +979,11 @@ func TestDecisionInterleavingsProperty(t *testing.T) {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"stateTest module must contain property interleavings",
+		"stateTest module must contain property operation sequences",
 	})
 }
 
-func TestLintBackendArchitectureRejectsStateTestInterleavingsWithoutCoreDecisionReferences(t *testing.T) {
+func TestLintBackendArchitectureRejectsStateTestOperationSequencesWithoutCoreDecisionReferences(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/decision.go": `// @archlint.module core
 // @archlint.domain mail
@@ -1000,7 +1002,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecisionInterleavingsProperty(t *testing.T) {
+func TestDecisionOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(inputs []uint8) bool {
 		for _, input := range inputs {
 			if !helper(input) {
@@ -1028,11 +1030,11 @@ func helper(input uint8) bool {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"stateTest module interleavings must reference same-domain core decision APIs",
+		"stateTest module operation sequences must reference same-domain core decision APIs",
 	})
 }
 
-func TestLintBackendArchitectureRejectsStateModuleUnrelatedToInterleavings(t *testing.T) {
+func TestLintBackendArchitectureRejectsStateModuleUnrelatedToOperationSequences(t *testing.T) {
 	backendRoot := newBackendFixture(t, map[string]string{
 		"internal/mail/store.go": `// @archlint.module state
 // @archlint.domain mail
@@ -1065,7 +1067,7 @@ import (
 	"testing/quick"
 )
 
-func TestOtherDecisionInterleavingsProperty(t *testing.T) {
+func TestOtherDecisionOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(inputs []uint8) bool {
 		for _, input := range inputs {
 			if !otherDecision(input) {
@@ -1085,7 +1087,7 @@ func otherDecision(input uint8) bool {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"state module must reference a core decision API reached by same-domain property interleavings",
+		"state module must reference a core decision API reached by same-domain property operation sequences",
 	})
 }
 
@@ -1213,7 +1215,7 @@ func (service *MockService) Handle() {
 	})
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
-		"state module must have a same-domain stateTest with property interleavings",
+		"state module must have a same-domain stateTest with property operation sequences",
 	})
 }
 
@@ -1236,7 +1238,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecideStateInterleavingsProperty(t *testing.T) {
+func TestDecideStateOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(inputs []uint8) bool {
 		for _, input := range inputs {
 			_ = DecideState(input)
@@ -1278,7 +1280,7 @@ package mail
 
 import "testing/quick"
 
-func TestDecideStateInterleavingsProperty() {
+func TestDecideStateOperationSequencesProperty() {
 	_ = quick.Check
 }
 `,
@@ -1300,7 +1302,7 @@ func (service *MockService) Handle() {
 
 	assertViolationsContain(t, lintBackendArchitecture(backendRoot), []string{
 		"core module must have a same-domain test or stateTest module",
-		"state module must have a same-domain stateTest with property interleavings",
+		"state module must have a same-domain stateTest with property operation sequences",
 	})
 }
 
@@ -1323,7 +1325,7 @@ import (
 	"testing/quick"
 )
 
-func TestDecideStateInterleavingsProperty(t *testing.T) {
+func TestDecideStateOperationSequencesProperty(t *testing.T) {
 	if err := quick.Check(func(inputs []uint8) bool {
 		for _, input := range inputs {
 			_ = DecideState(input)
