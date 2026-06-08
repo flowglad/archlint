@@ -1119,17 +1119,27 @@ let run_dune_build source_root =
            status)
 
 let resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt =
+  let source_path path =
+    if Filename.check_suffix path ".pp.ml" then
+      Filename.chop_suffix path ".pp.ml" ^ ".ml"
+    else if Filename.check_suffix path ".pp.mli" then
+      Filename.chop_suffix path ".pp.mli" ^ ".mli"
+    else path
+  in
   match cmt.Cmt_format.cmt_sourcefile with
   | None -> None
   | Some path ->
+      let normalized_path = source_path path in
       let candidates =
         if Filename.is_relative path then
           [
             Filename.concat cmt.Cmt_format.cmt_builddir path;
             Filename.concat source_root path;
+            Filename.concat source_root normalized_path;
             path;
+            normalized_path;
           ]
-        else [ path ]
+        else [ path; normalized_path ]
       in
       match
         List.find_map
@@ -1140,7 +1150,9 @@ let resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt =
       with
       | Some candidate -> Some candidate
       | None -> (
-          match StringMap.find_opt (Filename.basename path) source_paths_by_basename with
+          match
+            StringMap.find_opt (Filename.basename normalized_path) source_paths_by_basename
+          with
           | Some [ source_path ] -> Some source_path
           | _ -> None)
 
