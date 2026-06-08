@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,6 +88,11 @@ type architectureInterfaceEvidence struct {
 	ImperativeDeclarations []string `json:"imperativeDeclarations"`
 }
 
+type goLoadedFileContext struct {
+	syntaxFile *ast.File
+	typesInfo  *types.Info
+}
+
 func main() {
 	repoRoot := flag.String("repo-root", "../..", "repository root")
 	goModule := flag.String("go-module", "", "Go module path relative to repository root")
@@ -128,12 +134,13 @@ func goArchitectureFacts(moduleRoot string, packagePattern string) (architecture
 	var violations []violation
 	loadedPackages, loadViolations := loadGoPackages(moduleRoot, packagePattern)
 	violations = append(violations, loadViolations...)
+	loadedFiles := goLoadedFileContexts(loadedPackages)
 
 	facts := architectureFactDocument{}
 	seenFiles := map[string]struct{}{}
 	for _, path := range goPackagePatternFiles(moduleRoot, packagePattern) {
 		seenFiles[path] = struct{}{}
-		fileFact, factViolations := goArchitectureFileFact(path)
+		fileFact, factViolations := goArchitectureFileFact(path, loadedFiles[path])
 		violations = append(violations, factViolations...)
 		if len(factViolations) == 0 {
 			facts.Files = append(facts.Files, fileFact)
@@ -148,7 +155,7 @@ func goArchitectureFacts(moduleRoot string, packagePattern string) (architecture
 				continue
 			}
 			seenFiles[path] = struct{}{}
-			fileFact, factViolations := goArchitectureFileFact(path)
+			fileFact, factViolations := goArchitectureFileFact(path, loadedFiles[path])
 			violations = append(violations, factViolations...)
 			if len(factViolations) == 0 {
 				facts.Files = append(facts.Files, fileFact)
@@ -183,7 +190,7 @@ func goPackagePatternFiles(moduleRoot string, packagePattern string) []string {
 func loadGoPackages(moduleRoot string, packagePattern string) ([]*packages.Package, []violation) {
 	config := packages.Config{
 		Dir:  moduleRoot,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedSyntax,
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps,
 	}
 	loadedPackages, err := packages.Load(&config, packagePattern)
 	if err != nil {
@@ -199,6 +206,28 @@ func loadGoPackages(moduleRoot string, packagePattern string) ([]*packages.Packa
 		}
 	}
 	return loadedPackages, violations
+}
+
+func goLoadedFileContexts(loadedPackages []*packages.Package) map[string]goLoadedFileContext {
+	loadedFiles := map[string]goLoadedFileContext{}
+	for _, loadedPackage := range loadedPackages {
+		for index, syntaxFile := range loadedPackage.Syntax {
+			var paths []string
+			if index < len(loadedPackage.CompiledGoFiles) {
+				paths = append(paths, loadedPackage.CompiledGoFiles[index])
+			}
+			if index < len(loadedPackage.GoFiles) {
+				paths = append(paths, loadedPackage.GoFiles[index])
+			}
+			for _, path := range paths {
+				loadedFiles[path] = goLoadedFileContext{
+					syntaxFile: syntaxFile,
+					typesInfo:  loadedPackage.TypesInfo,
+				}
+			}
+		}
+	}
+	return loadedFiles
 }
 
 func goPackageFiles(loadedPackage *packages.Package) []string {
@@ -223,10 +252,14 @@ func goPackageFiles(loadedPackage *packages.Package) []string {
 	return setToSortedSlice(files)
 }
 
-func goArchitectureFileFact(path string) (architectureFileFact, []violation) {
-	syntaxFile, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		return architectureFileFact{}, []violation{{path: path, message: err.Error()}}
+func goArchitectureFileFact(path string, loadedFile goLoadedFileContext) (architectureFileFact, []violation) {
+	syntaxFile := loadedFile.syntaxFile
+	if syntaxFile == nil {
+		parsedFile, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return architectureFileFact{}, []violation{{path: path, message: err.Error()}}
+		}
+		syntaxFile = parsedFile
 	}
 	metadata := moduleMetadataForFile(path)
 	imports := goImports(syntaxFile)
