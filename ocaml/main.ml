@@ -749,8 +749,12 @@ let references_test_library facts =
       StringSet.mem name facts.imports || StringSet.mem name expanded_references)
     test_library_identifiers
 
-let infer_test_scope path facts =
-  if references_test_library facts then
+let infer_test_scope ~test_scope_paths path facts =
+  (* A module is in a test scope if it references a known test library or if a
+     dune [(test ...)]/[(tests ...)] stanza declares it as a test module. The
+     latter covers hand-rolled harnesses (exit-code / failwith / printf tallies)
+     that never touch Alcotest, QCheck, etc. *)
+  if references_test_library facts || StringSet.mem path test_scope_paths then
     basename_without_extension path
   else ""
 
@@ -830,7 +834,7 @@ let shared_state_facts facts =
 let effectful_import_list imports =
   imports |> List.filter (fun import -> StringSet.mem import effectful_imports)
 
-let source_fact ~root:_ ~interfaces path =
+let source_fact ~root:_ ~interfaces ~test_scope_paths path =
   let source = read_file path in
   let metadata = parse_metadata source in
   let facts =
@@ -849,7 +853,7 @@ let source_fact ~root:_ ~interfaces path =
   in
   {
     path;
-    test_scope = infer_test_scope path facts;
+    test_scope = infer_test_scope ~test_scope_paths path facts;
     metadata;
     imports = set_to_list facts.imports;
     identifiers = set_to_list facts.identifiers;
@@ -890,6 +894,137 @@ let rec collect_ocaml_files dir =
          then [ path ]
          else [])
 
+(* Minimal S-expression reader, just enough to find dune stanzas. dune files
+   are S-expressions; we tolerate comments and strings and ignore everything we
+   do not recognise. *)
+type sexp = Atom of string | Node of sexp list
+
+let parse_sexps text =
+  let length = String.length text in
+  let pos = ref 0 in
+  let peek () = if !pos < length then Some text.[!pos] else None in
+  let advance () = incr pos in
+  let rec skip_ws () =
+    match peek () with
+    | Some (' ' | '\t' | '\n' | '\r') ->
+        advance ();
+        skip_ws ()
+    | Some ';' ->
+        while match peek () with Some c -> c <> '\n' | None -> false do
+          advance ()
+        done;
+        skip_ws ()
+    | _ -> ()
+  in
+  let read_quoted () =
+    advance ();
+    let buf = Buffer.create 16 in
+    let rec loop () =
+      match peek () with
+      | None | Some '"' -> advance ()
+      | Some '\\' ->
+          advance ();
+          (match peek () with
+          | Some c ->
+              Buffer.add_char buf c;
+              advance ()
+          | None -> ());
+          loop ()
+      | Some c ->
+          Buffer.add_char buf c;
+          advance ();
+          loop ()
+    in
+    loop ();
+    Buffer.contents buf
+  in
+  let is_atom_char c =
+    not
+      (c = '(' || c = ')' || c = '"' || c = ';' || c = ' ' || c = '\t'
+     || c = '\n' || c = '\r')
+  in
+  let read_atom () =
+    let buf = Buffer.create 16 in
+    let rec loop () =
+      match peek () with
+      | Some c when is_atom_char c ->
+          Buffer.add_char buf c;
+          advance ();
+          loop ()
+      | _ -> ()
+    in
+    loop ();
+    Buffer.contents buf
+  in
+  let rec read_one () =
+    skip_ws ();
+    match peek () with
+    | None -> None
+    | Some ')' ->
+        advance ();
+        None
+    | Some '(' ->
+        advance ();
+        Some (Node (read_seq ()))
+    | Some '"' -> Some (Atom (read_quoted ()))
+    | Some _ -> Some (Atom (read_atom ()))
+  and read_seq () =
+    match read_one () with Some item -> item :: read_seq () | None -> []
+  in
+  read_seq ()
+
+(* Module names declared by a dune [(test ...)]/[(tests ...)] stanza, read from
+   its [name]/[names]/[modules] fields. Set operators like [:standard] and [\]
+   in a [modules] field are non-atom or non-module tokens and are skipped. *)
+let test_modules_of_sexp = function
+  | Node (Atom head :: fields) when head = "test" || head = "tests" ->
+      List.concat_map
+        (function
+          | Node (Atom field :: args)
+            when field = "name" || field = "names" || field = "modules" ->
+              List.filter_map (function Atom a -> Some a | _ -> None) args
+          | _ -> [])
+        fields
+  | _ -> []
+
+(* Absolute paths of [.ml] files declared as test modules by dune stanzas under
+   [dir]. Mirrors collect_ocaml_files so the produced paths match exactly. *)
+let rec collect_test_scope_paths dir =
+  let entries =
+    try Sys.readdir dir |> Array.to_list |> List.sort String.compare
+    with Sys_error _ -> []
+  in
+  let here =
+    if List.mem "dune" entries then
+      let modules =
+        try
+          parse_sexps (read_file (Filename.concat dir "dune"))
+          |> List.concat_map test_modules_of_sexp
+        with _ -> []
+      in
+      List.concat_map
+        (fun m ->
+          (* dune module names map case-insensitively to file names; emit both
+             the verbatim and uncapitalised forms and let set membership pick
+             the one that matches a real file. *)
+          [
+            Filename.concat dir (m ^ ".ml");
+            Filename.concat dir (String.uncapitalize_ascii m ^ ".ml");
+          ])
+        modules
+    else []
+  in
+  let nested =
+    List.concat_map
+      (fun name ->
+        let path = Filename.concat dir name in
+        if (try Sys.is_directory path with Sys_error _ -> false) then
+          if should_skip_dir name then [] else collect_test_scope_paths path
+        else [])
+      entries
+  in
+  here @ nested
+
 let repo_root = ref "."
 let ocaml_root = ref "."
 
@@ -910,6 +1045,7 @@ let () =
     else !ocaml_root
   in
   let paths = collect_ocaml_files source_root in
+  let test_scope_paths = StringSet.of_list (collect_test_scope_paths source_root) in
   let interfaces =
     List.fold_left
       (fun acc path ->
@@ -918,7 +1054,7 @@ let () =
         else acc)
       StringMap.empty paths
   in
-  let files = paths |> List.map (source_fact ~root ~interfaces) in
+  let files = paths |> List.map (source_fact ~root ~interfaces ~test_scope_paths) in
   let json = `Assoc [ ("files", `List (List.map file_fact_to_json files)) ] in
   Yojson.Safe.pretty_to_channel stdout json;
   output_char stdout '\n'

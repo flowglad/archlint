@@ -91,6 +91,34 @@ let suite =
   ]
 ML
 
+# A hand-rolled harness in a dune (test ...) stanza: no Alcotest/QCheck/etc.,
+# pass/fail signalled purely by the process exit code. The dune stanza is the
+# authoritative test-scope signal, so this must still be detected as a test.
+mkdir -p "$TMPDIR/plain"
+cat > "$TMPDIR/plain/dune" <<'DUNE'
+; covers the (test ...) stanza form
+(test
+ (name plain_exit_test)
+ (modules plain_exit_test))
+DUNE
+
+cat > "$TMPDIR/plain/plain_exit_test.ml" <<'ML'
+(* @archlint.module test
+   @archlint.domain demo.decision *)
+
+let failures = ref 0
+
+let check name cond =
+  if cond then Stdlib.Printf.printf "ok: %s\n" name
+  else (
+    Stdlib.incr failures;
+    Stdlib.Printf.printf "FAIL: %s\n" name)
+
+let () =
+  check "decide is positive" (match Decision.decide 1 with `Positive -> true | _ -> false);
+  if !failures > 0 then Stdlib.exit 1
+ML
+
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts-state.json"
 assert_facts "$TMPDIR/facts-state.json" <<'PY'
 import json
@@ -114,6 +142,10 @@ handler = [item for item in document["files"] if item["path"].endswith("handler.
 assert "Unix" in handler["effectfulIdentifiers"], handler
 fuzz = [item for item in document["files"] if item["path"].endswith("fuzz_decision.ml")][0]
 assert fuzz["testScope"] == "fuzz_decision", fuzz
+# Test scope inferred from the dune (test ...) stanza, not a test-library reference.
+plain = [item for item in document["files"] if item["path"].endswith("plain_exit_test.ml")][0]
+assert plain["testScope"] == "plain_exit_test", plain
+assert not any(lib in plain["apiReferences"] for lib in ("Alcotest", "QCheck", "QCheck2", "Crowbar")), plain
 export = [item for item in document["files"] if item["path"].endswith("export.ml")][0]
 assert "Js_of_ocaml" in export["effectfulImports"], export
 assert "Js" in export["effectfulIdentifiers"], export
