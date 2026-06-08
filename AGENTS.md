@@ -25,6 +25,16 @@ This applies broadly, including:
 - test-scope inference from test-library APIs
 - effect or state boundary evidence derived from known dependency APIs
 
+Call-graph expansion is an adapter contract, not a per-rule convenience. Apply it uniformly at the fact site so every consumer of that fact sees the expanded evidence. For property-test facts, the expansion root is the whole property construction that reaches the test runner, not only the final assertion callback. That includes:
+
+- generator expressions and helper bindings used to build generated inputs
+- named helper functions and local function literals
+- non-function top-level bindings such as generator values
+- higher-order property builders when the language structure can trace a callback or returned property function
+- operation-sequence operations and assertions derived through helpers
+
+Do not add a narrow expansion path only for the newest failing fixture. Prefer a single closure helper that all fact emitters for that evidence category call through. If full expansion is not possible in a language adapter without semantic analysis, implement the strongest structural expansion available, document the remaining gap in the adapter test or issue, and avoid pretending a bare identifier match proves reachability.
+
 The intent is to reject forgery by incidental names while accepting normal local factoring. A test file should not fail just because it wraps `QCheck`, `Crowbar`, `testing/quick`, or a Swift property-check helper in a local helper. Conversely, a file should not pass merely because it contains a local variable or unrelated declaration with a trusted-looking name.
 
 For generated property tests, adapters should emit structurally rich generated-input evidence rather than policy booleans. Report the generated inputs and syntactic uses where each generated value participates in the property body. These uses are anti-vacuity evidence only; they do not need to prove value flow to an assertion or decision API. Constant properties such as unit generators with `fun ()` or ignored closure arguments may be useful regression assertions, but they should not be emitted as generated-input-backed coverage.

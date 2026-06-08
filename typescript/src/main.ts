@@ -71,6 +71,7 @@ type Facts = {
   sharedState: Map<string, Set<string>>;
   propertyChecks: PropertyCheckFact[];
   functionReferences: Map<string, Set<string>>;
+  functionBodies: Map<string, ts.FunctionLikeDeclaration>;
   interfaceLogicEvidence: InterfaceLogicEvidence;
 };
 
@@ -462,6 +463,7 @@ function emptyFacts(): Facts {
     sharedState: new Map(),
     propertyChecks: [],
     functionReferences: new Map(),
+    functionBodies: new Map(),
     interfaceLogicEvidence: {
       functionBodies: [],
       constructorBodies: [],
@@ -533,6 +535,7 @@ function recordFunctionDeclaration(facts: Facts, declaration: ts.FunctionDeclara
   if (declaration.body !== undefined) {
     addUnique(facts.interfaceLogicEvidence.functionBodies, name);
     facts.functionReferences.set(name, apiReferencesInNode(declaration.body));
+    facts.functionBodies.set(name, declaration);
   }
   recordReturnTypeProducts(facts, declaration.type);
 }
@@ -559,8 +562,10 @@ function recordVariableStatement(facts: Facts, statement: ts.VariableStatement, 
         }
         addUnique(facts.interfaceLogicEvidence.functionBodies, name);
         facts.functionReferences.set(name, apiReferencesInNode(declaration.initializer));
+        facts.functionBodies.set(name, declaration.initializer);
       } else if (declaration.initializer !== undefined && !isLiteralLike(declaration.initializer)) {
         addUnique(facts.interfaceLogicEvidence.derivedValueBodies, name);
+        facts.functionReferences.set(name, apiReferencesInNode(declaration.initializer));
       }
     }
   }
@@ -622,11 +627,19 @@ function propertyCheckForCall(facts: Facts, call: ts.CallExpression): PropertyCh
   if (!isFastCheckPropertyCall(call.expression) || call.arguments.length === 0) {
     return undefined;
   }
-  const callback = call.arguments[call.arguments.length - 1];
-  if (callback === undefined || !isFunctionLikeExpression(callback)) {
+  const callbackExpression = call.arguments[call.arguments.length - 1];
+  if (callbackExpression === undefined) {
     return undefined;
   }
-  const references = sorted(expandedApiReferences(facts, apiReferencesInNode(callback), new Set()));
+  const callback = propertyCallbackForExpression(facts, callbackExpression);
+  if (callback === undefined) {
+    return undefined;
+  }
+  const directReferences = call.arguments.reduce(
+    (acc, argument) => union(acc, propertyConstructionReferences(facts, argument)),
+    new Set<string>(),
+  );
+  const references = sorted(expandedApiReferences(facts, directReferences, new Set()));
   const generatedInputs = callback.parameters.flatMap((parameter) =>
     bindingNames(parameter.name).map((name) => ({
       name,
@@ -635,6 +648,64 @@ function propertyCheckForCall(facts: Facts, call: ts.CallExpression): PropertyCh
   );
   const operationSequences = operationSequencesForProperty(facts, call, callback, generatedInputs);
   return { references, generatedInputs, operationSequences };
+}
+
+function propertyConstructionReferences(facts: Facts, node: ts.Node): Set<string> {
+  const references = apiReferencesInNode(node);
+  for (const identifier of identifiersInNode(node)) {
+    if (facts.functionReferences.has(identifier)) {
+      for (const expanded of expandedApiReferences(facts, new Set([identifier]), new Set())) {
+        references.add(expanded);
+      }
+    } else {
+      references.add(identifier);
+    }
+  }
+  return references;
+}
+
+function identifiersInNode(node: ts.Node): Set<string> {
+  const identifiers = new Set<string>();
+  const visit = (current: ts.Node): void => {
+    if (ts.isIdentifier(current) && !isDeclarationName(current)) {
+      identifiers.add(current.text);
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return identifiers;
+}
+
+function propertyCallbackForExpression(facts: Facts, expression: ts.Expression): ts.FunctionLikeDeclaration | undefined {
+  if (isFunctionLikeExpression(expression)) {
+    return expression;
+  }
+  if (ts.isIdentifier(expression)) {
+    return facts.functionBodies.get(expression.text);
+  }
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const builder = facts.functionBodies.get(expression.expression.text);
+    if (builder?.body !== undefined) {
+      return returnedFunctionLike(builder.body);
+    }
+  }
+  return undefined;
+}
+
+function returnedFunctionLike(node: ts.Node): ts.FunctionLikeDeclaration | undefined {
+  let returned: ts.FunctionLikeDeclaration | undefined;
+  const visit = (current: ts.Node): void => {
+    if (returned !== undefined) {
+      return;
+    }
+    if (ts.isReturnStatement(current) && current.expression !== undefined && isFunctionLikeExpression(current.expression)) {
+      returned = current.expression;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return returned;
 }
 
 function isFastCheckPropertyCall(expression: ts.Expression): boolean {
@@ -940,6 +1011,14 @@ function sharedStateFacts(evidence: Map<string, Set<string>>): SharedStateFact[]
 
 function intersection(left: Set<string>, right: Set<string>): Set<string> {
   return new Set([...left].filter((value) => right.has(value)));
+}
+
+function union(left: Set<string>, right: Set<string>): Set<string> {
+  const values = new Set(left);
+  for (const value of right) {
+    values.add(value);
+  }
+  return values;
 }
 
 function hasIntersection(left: Set<string>, right: Set<string>): boolean {
