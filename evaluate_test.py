@@ -32,6 +32,7 @@ def source_file(**overrides):
         "qualifiedReferences": [],
         "effectfulImports": [],
         "effectfulIdentifiers": [],
+        "effectfulReferences": [],
         "sharedState": [],
         "propertyChecks": [],
         "interfaceLogicEvidence": empty_interface_logic_evidence(),
@@ -107,6 +108,82 @@ class EvaluateTests(unittest.TestCase):
 
         self.assertIn(
             "effectful identifiers must be structural identifiers: EffectType",
+            [violation.message for violation in violations],
+        )
+
+    def test_effectful_reference_enclosing_identifier_must_be_structural_identifier(self):
+        source = source_file(
+            path="/repo/Core.swift",
+            identifiers=[],
+            effectfulReferences=[
+                {
+                    "kind": "call",
+                    "category": "network",
+                    "reference": "messages.create",
+                    "origin": "dependency-summary",
+                    "enclosingIdentifier": "run",
+                    "packageName": "@anthropic-ai/sdk",
+                    "summaryId": "anthropic-sdk-messages-create-network",
+                    "receiverType": "Anthropic",
+                    "evidence": ["summary"],
+                }
+            ],
+        )
+
+        violations = evaluate.evaluate([source])
+
+        self.assertIn(
+            "effectful reference enclosing identifiers must be structural identifiers: run",
+            [violation.message for violation in violations],
+        )
+
+    def test_dependency_effectful_reference_requires_summary_identity(self):
+        source = source_file(
+            path="/repo/Core.swift",
+            effectfulReferences=[
+                {
+                    "kind": "call",
+                    "category": "network",
+                    "reference": "messages.create",
+                    "origin": "dependency-summary",
+                    "enclosingIdentifier": "decideSync",
+                    "packageName": "",
+                    "summaryId": "",
+                    "receiverType": "Anthropic",
+                    "evidence": ["summary"],
+                }
+            ],
+        )
+
+        violations = evaluate.evaluate([source])
+
+        self.assertIn(
+            "dependency effectful references must include packageName and summaryId: messages.create",
+            [violation.message for violation in violations],
+        )
+
+    def test_structured_effectful_reference_counts_as_effectful_identifier(self):
+        source = source_file(
+            path="/repo/Core.swift",
+            effectfulReferences=[
+                {
+                    "kind": "call",
+                    "category": "network",
+                    "reference": "messages.create",
+                    "origin": "dependency-summary",
+                    "enclosingIdentifier": "decideSync",
+                    "packageName": "@anthropic-ai/sdk",
+                    "summaryId": "anthropic-sdk-messages-create-network",
+                    "receiverType": "Anthropic",
+                    "evidence": ["summary"],
+                }
+            ],
+        )
+
+        violations = evaluate.evaluate([source])
+
+        self.assertIn(
+            "effectful identifiers may only appear in shell, state, interface, test, stateTest, or exempt modules",
             [violation.message for violation in violations],
         )
 
@@ -1432,6 +1509,7 @@ class EvaluateTests(unittest.TestCase):
                     "qualifiedReferences": [],
                     "effectfulImports": [],
                     "effectfulIdentifiers": [],
+                    "effectfulReferences": [],
                     "sharedState": [],
                     "propertyChecks": [],
                     "interfaceLogicEvidence": empty_interface_logic_evidence(),
@@ -1573,6 +1651,7 @@ def valid_fact_document():
                 "qualifiedReferences": [],
                 "effectfulImports": [],
                 "effectfulIdentifiers": [],
+                "effectfulReferences": [],
                 "sharedState": [],
                 "propertyChecks": [],
                 "interfaceLogicEvidence": empty_interface_logic_evidence(),

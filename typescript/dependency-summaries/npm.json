@@ -1,0 +1,164 @@
+{
+  "dependencies": [
+    {
+      "packageName": "@anthropic-ai/sdk",
+      "versionRange": "^0.91.0",
+      "rules": [
+        {
+          "id": "anthropic-sdk-messages-create-network",
+          "effectCategory": "network",
+          "receiverTypeNames": ["Anthropic"],
+          "memberPaths": ["messages.create"],
+          "evidence": [
+            "src/resources/messages/messages.ts: Messages.create delegates to client.post('/v1/messages')",
+            "src/client.ts: makeRequest delegates to fetchWithTimeout",
+            "src/client.ts: fetchWithTimeout reaches fetch, setTimeout, and clearTimeout"
+          ]
+        },
+        {
+          "id": "anthropic-sdk-messages-stream-network",
+          "effectCategory": "network",
+          "receiverTypeNames": ["Anthropic"],
+          "memberPaths": ["messages.stream"],
+          "evidence": [
+            "src/resources/messages/messages.ts: Messages.stream delegates to Messages.create with stream enabled",
+            "src/client.ts: fetchWithTimeout reaches fetch, setTimeout, and clearTimeout"
+          ]
+        },
+        {
+          "id": "anthropic-sdk-messages-count-tokens-network",
+          "effectCategory": "network",
+          "receiverTypeNames": ["Anthropic"],
+          "memberPaths": ["messages.countTokens"],
+          "evidence": [
+            "src/resources/messages/messages.ts: countTokens delegates to client.post('/v1/messages/count_tokens')",
+            "src/client.ts: fetchWithTimeout reaches fetch, setTimeout, and clearTimeout"
+          ]
+        }
+      ]
+    },
+    {
+      "packageName": "@sentry/node",
+      "versionRange": "^10.0.0",
+      "rules": [
+        {
+          "id": "sentry-node-init-setup-effect",
+          "effectCategory": "network",
+          "receiverTypeNames": [],
+          "memberPaths": ["init"],
+          "evidence": [
+            "src/sdk/index.ts: init installs the Node SDK client and integrations",
+            "src/client.ts: NodeClient sends events through the configured Sentry transport"
+          ]
+        },
+        {
+          "id": "sentry-node-capture-exception-network",
+          "effectCategory": "network",
+          "receiverTypeNames": [],
+          "memberPaths": ["captureException"],
+          "evidence": [
+            "src/exports.ts: captureException records an exception on the current scope/client",
+            "src/client.ts: NodeClient sends captured events through the configured transport"
+          ]
+        },
+        {
+          "id": "sentry-node-flush-network",
+          "effectCategory": "network",
+          "receiverTypeNames": [],
+          "memberPaths": ["flush"],
+          "evidence": [
+            "src/exports.ts: flush waits for pending event delivery",
+            "src/client.ts: NodeClient flushes pending transport work"
+          ]
+        }
+      ]
+    },
+    {
+      "packageName": "openai",
+      "versionRange": "^6.0.0",
+      "rules": [
+        {
+          "id": "openai-chat-completions-create-network",
+          "effectCategory": "network",
+          "receiverTypeNames": ["OpenAI"],
+          "memberPaths": ["chat.completions.create"],
+          "evidence": [
+            "src/resources/chat/completions/completions.ts: create posts chat completion requests",
+            "src/core/api-client.ts: request execution reaches the configured HTTP fetch implementation"
+          ]
+        },
+        {
+          "id": "openai-embeddings-create-network",
+          "effectCategory": "network",
+          "receiverTypeNames": ["OpenAI"],
+          "memberPaths": ["embeddings.create"],
+          "evidence": [
+            "src/resources/embeddings.ts: create posts embedding requests",
+            "src/core/api-client.ts: request execution reaches the configured HTTP fetch implementation"
+          ]
+        }
+      ]
+    },
+    {
+      "packageName": "@trigger.dev/sdk",
+      "versionRange": "^4.4.0",
+      "rules": [
+        {
+          "id": "trigger-sdk-metadata-append-runtime-metadata",
+          "effectCategory": "storage",
+          "receiverTypeNames": [],
+          "memberPaths": ["append"],
+          "evidence": [
+            "dist/esm/v3/metadata.d.ts: metadata.append appends a value to an array in the current run metadata",
+            "dist/esm/v3/metadata.d.ts: metadata.flush flushes metadata to the Trigger.dev instance"
+          ]
+        },
+        {
+          "id": "trigger-sdk-metadata-set-runtime-metadata",
+          "effectCategory": "storage",
+          "receiverTypeNames": [],
+          "memberPaths": ["set", "del", "remove", "increment", "decrement", "replace", "save"],
+          "evidence": [
+            "dist/esm/v3/metadata.d.ts: metadata mutation APIs update current run metadata",
+            "dist/esm/v3/metadata.d.ts: metadata.flush flushes metadata to the Trigger.dev instance"
+          ]
+        },
+        {
+          "id": "trigger-sdk-metadata-refresh-network",
+          "effectCategory": "network",
+          "receiverTypeNames": [],
+          "memberPaths": ["flush", "refresh"],
+          "evidence": [
+            "dist/esm/v3/metadata.d.ts: metadata.flush flushes metadata to the Trigger.dev instance",
+            "dist/esm/v3/metadata.d.ts: metadata.refresh refreshes metadata from the Trigger.dev instance"
+          ]
+        }
+      ]
+    },
+    {
+      "packageName": "@trigger.dev/core",
+      "versionRange": "^4.4.0",
+      "rules": [
+        {
+          "id": "trigger-core-logger-runtime-log",
+          "effectCategory": "console",
+          "receiverTypeNames": ["LoggerAPI"],
+          "memberPaths": ["debug", "log", "info", "warn", "error"],
+          "evidence": [
+            "dist/esm/v3/logger-api.d.ts: logger is the LoggerAPI entrypoint",
+            "dist/esm/v3/logger/index.d.ts: LoggerAPI exposes debug/log/info/warn/error task logging methods"
+          ]
+        },
+        {
+          "id": "trigger-core-logger-trace-runtime-telemetry",
+          "effectCategory": "unknown",
+          "receiverTypeNames": ["LoggerAPI"],
+          "memberPaths": ["trace", "startSpan"],
+          "evidence": [
+            "dist/esm/v3/logger/index.d.ts: LoggerAPI exposes trace and startSpan telemetry methods"
+          ]
+        }
+      ]
+    }
+  ]
+}

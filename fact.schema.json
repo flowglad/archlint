@@ -85,6 +85,28 @@
         "references": { "$ref": "#/$defs/stringList" }
       }
     },
+    "effectfulReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "category", "reference", "origin", "enclosingIdentifier", "packageName", "summaryId", "receiverType", "evidence"],
+      "properties": {
+        "kind": {
+          "enum": ["call", "new", "import", "identifier"]
+        },
+        "category": {
+          "enum": ["network", "filesystem", "database", "process", "timer", "console", "storage", "browser", "unknown"]
+        },
+        "reference": { "$ref": "#/$defs/nonEmptyString" },
+        "origin": {
+          "enum": ["standard-library", "global", "dependency-summary", "local-call-expansion"]
+        },
+        "enclosingIdentifier": { "type": "string" },
+        "packageName": { "type": "string" },
+        "summaryId": { "type": "string" },
+        "receiverType": { "type": "string" },
+        "evidence": { "$ref": "#/$defs/stringList" }
+      }
+    },
     "interfaceLogicEvidence": {
       "type": "object",
       "additionalProperties": false,
@@ -140,6 +162,11 @@
         "qualifiedReferences": { "$ref": "#/$defs/stringList" },
         "effectfulImports": { "$ref": "#/$defs/stringList" },
         "effectfulIdentifiers": { "$ref": "#/$defs/stringList" },
+        "effectfulReferences": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/effectfulReference" }
+        },
         "sharedState": {
           "type": "array",
           "uniqueItems": true,

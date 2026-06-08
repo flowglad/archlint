@@ -96,6 +96,19 @@ class SharedStateEvidence:
 
 
 @dataclass(frozen=True)
+class EffectfulReference:
+    kind: str
+    category: str
+    reference: str
+    origin: str
+    enclosing_identifier: str
+    package_name: str
+    summary_id: str
+    receiver_type: str
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SourceFile:
     path: str
     test_scope: str
@@ -111,6 +124,7 @@ class SourceFile:
     qualified_references: set[str]
     effectful_imports: set[str]
     effectful_identifiers: set[str]
+    effectful_references: tuple[EffectfulReference, ...]
     has_effectful_imports: bool
     has_effectful_identifiers: bool
     shared_state: tuple[SharedStateEvidence, ...]
@@ -339,6 +353,20 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         )
         for evidence in item["sharedState"]
     )
+    effectful_references = tuple(
+        EffectfulReference(
+            kind=evidence["kind"],
+            category=evidence["category"],
+            reference=evidence["reference"],
+            origin=evidence["origin"],
+            enclosing_identifier=evidence["enclosingIdentifier"],
+            package_name=evidence["packageName"],
+            summary_id=evidence["summaryId"],
+            receiver_type=evidence["receiverType"],
+            evidence=tuple(evidence["evidence"]),
+        )
+        for evidence in item.get("effectfulReferences", [])
+    )
     return SourceFile(
         path=item["path"],
         test_scope=item["testScope"],
@@ -358,8 +386,11 @@ def parse_source_file(item: dict[str, Any]) -> SourceFile:
         qualified_references=set(item["qualifiedReferences"]),
         effectful_imports=set(item["effectfulImports"]),
         effectful_identifiers=set(item["effectfulIdentifiers"]),
-        has_effectful_imports=bool(item["effectfulImports"]),
-        has_effectful_identifiers=bool(item["effectfulIdentifiers"]),
+        effectful_references=effectful_references,
+        has_effectful_imports=bool(item["effectfulImports"])
+        or any(effect.kind == "import" for effect in effectful_references),
+        has_effectful_identifiers=bool(item["effectfulIdentifiers"])
+        or any(effect.kind != "import" for effect in effectful_references),
         shared_state=shared_state,
         has_shared_mutable_state=bool(shared_state),
         property_checks=property_checks,
@@ -419,6 +450,35 @@ def evaluate_fact_consistency(files: list[SourceFile]) -> list[Violation]:
                     source_file.path,
                     "effectful identifiers must be structural identifiers: "
                     + ", ".join(effectful_identifiers_outside_identifiers),
+                )
+            )
+        effect_enclosing_identifiers_outside_identifiers = sorted(
+            {
+                effect.enclosing_identifier
+                for effect in source_file.effectful_references
+                if effect.enclosing_identifier
+            }
+            - source_file.identifiers
+        )
+        if effect_enclosing_identifiers_outside_identifiers:
+            violations.append(
+                Violation(
+                    source_file.path,
+                    "effectful reference enclosing identifiers must be structural identifiers: "
+                    + ", ".join(effect_enclosing_identifiers_outside_identifiers),
+                )
+            )
+        dependency_effects_without_summary = sorted(
+            effect.reference
+            for effect in source_file.effectful_references
+            if effect.origin == "dependency-summary" and (not effect.package_name or not effect.summary_id)
+        )
+        if dependency_effects_without_summary:
+            violations.append(
+                Violation(
+                    source_file.path,
+                    "dependency effectful references must include packageName and summaryId: "
+                    + ", ".join(dependency_effects_without_summary),
                 )
             )
         references_outside_property = sorted(
