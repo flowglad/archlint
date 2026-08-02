@@ -2,7 +2,8 @@ name: Archlint
 description: >-
   Run the archlint architecture conformance suite against the calling
   repository. Brings the Python evaluator plus the toolchain for the selected
-  language adapter, so a consumer repo needs only this one step in its CI.
+  language adapter, except that OCaml reuses the consumer's prepared switch
+  and build artifacts.
 
 # Consumers reference this as `uses: flowglad/archlint@v1`. GitHub checks the
 # archlint repo out into ${{ github.action_path }} automatically, so the
@@ -54,9 +55,8 @@ runs:
     - shell: bash
       run: uv sync --project "$GITHUB_ACTION_PATH"
 
-    # One toolchain-setup block per adapter, gated on the selected adapter so a
-    # consumer only pays for the language it uses. These mirror the per-language
-    # jobs in this repo's own .github/workflows/ci.yml.
+    # Go and TypeScript retain their existing self-contained setup. Only OCaml
+    # reuses a prepared consumer toolchain and build.
     - if: inputs.adapter == 'go'
       uses: actions/setup-go@v5
       with:
@@ -72,21 +72,10 @@ runs:
       run: npm --prefix "$GITHUB_ACTION_PATH/typescript" install
 
     - if: inputs.adapter == 'ocaml'
-      uses: ocaml/setup-ocaml@v3
-      with:
-        ocaml-compiler: "5.4"
-    - if: inputs.adapter == 'ocaml'
       shell: bash
-      # Install the adapter's deps into the switch setup-ocaml just provisioned.
-      # evaluate.py runs `dune exec`, which builds the adapter on demand against
-      # the active switch, so no separate build step is needed here.
+      # Install the adapter's dependencies into the caller's active switch.
+      # evaluate.py runs `dune exec`, which builds only the adapter on demand.
       run: opam install "$GITHUB_ACTION_PATH/ocaml" --deps-only --yes
-    - if: inputs.adapter == 'ocaml'
-      shell: bash
-      # The OCaml adapter reads typedtree artifacts from the consumer project,
-      # so it must be able to build that project too. Install consumer deps,
-      # including test deps, because test modules are part of the fact surface.
-      run: opam install "$GITHUB_WORKSPACE" --deps-only --with-test --yes
 
     # swift needs no setup step: GitHub's macOS runners ship the toolchain, and
     # evaluate.py builds the adapter via `swift run`. Run this adapter on a
@@ -126,10 +115,8 @@ runs:
             exit 1
             ;;
         esac
-        # The ocaml adapter shells out to `dune`, which lives in the opam
-        # switch's bin. Composite-action steps are separate shells and
-        # setup-ocaml's environment is not reliably active here, so load it
-        # explicitly before evaluate.py spawns dune.
+        # Composite-action steps are separate shells, so reload the caller's
+        # active switch before evaluate.py builds the adapter.
         if [ "$ADAPTER" = "ocaml" ]; then
           eval "$(opam env)"
         fi

@@ -1105,19 +1105,6 @@ let rec collect_artifact_files dir =
       else [])
     entries
 
-let shell_quote value = Filename.quote value
-
-let run_dune_build source_root =
-  let command =
-    Printf.sprintf "cd %s && OCAMLPARAM='_,bin-annot=1' dune build @all" (shell_quote source_root)
-  in
-  match Sys.command command with
-  | 0 -> ()
-  | status ->
-      failwith
-        (Printf.sprintf "failed to build OCaml project at %s with dune (exit %d)" source_root
-           status)
-
 let resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt =
   let source_path path =
     if Filename.check_suffix path ".pp.ml" then
@@ -1157,7 +1144,6 @@ let resolve_cmt_source_path ~source_root ~source_paths_by_basename cmt =
           | _ -> None)
 
 let load_typedtree_artifacts ~source_root source_paths =
-  run_dune_build source_root;
   let source_paths =
     source_paths |> List.map absolute_path |> List.sort_uniq String.compare
   in
@@ -1220,7 +1206,9 @@ let load_typedtree_artifacts ~source_root source_paths =
   in
   if missing <> [] then
     failwith
-      (Printf.sprintf "missing typedtree artifacts for: %s" (String.concat ", " missing));
+      (Printf.sprintf
+         "missing typedtree artifacts for: %s; configure Dune with (bin_annot true) and build @check before running Archlint"
+         (String.concat ", " missing));
   artifacts_by_source
 
 (* Minimal S-expression reader, just enough to find dune stanzas. dune files
