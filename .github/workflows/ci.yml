@@ -72,6 +72,17 @@ jobs:
       - run: opam install ./ocaml --deps-only --yes
       - run: echo "ARCHLINT_OPAM_SWITCH=$(opam switch show)" >> "$GITHUB_ENV"
       - run: just test-ocaml
+      # Exercise the consumer-facing composite boundary, not only the adapter
+      # binary used by test-ocaml. The fixture owns its build; the action must
+      # reuse this switch and these typedtree artifacts.
+      - name: Prepare OCaml action fixture
+        run: dune build --root "$GITHUB_WORKSPACE/ocaml/fixtures/base" @all @runtest @check
+      - name: Test prepared OCaml action
+        uses: ./
+        with:
+          adapter: ocaml
+          repo-root: ${{ github.workspace }}/ocaml/fixtures/base
+          ocaml-root: .
 
   swift:
     # macOS runners ship the Swift toolchain, avoiding a slow Linux setup.
