@@ -93,16 +93,43 @@ uv sync --project .
 Archlint ships a composite GitHub Action so a consumer repo can run it with a
 single step. GitHub checks archlint out into the action path automatically, so
 nothing is cloned by hand: the action brings the Python evaluator plus the
-toolchain for the one adapter you select, then runs `evaluate.py` against the
-calling repository.
+toolchain for the selected adapter, then runs `evaluate.py` against the calling
+repository. The OCaml path is the exception: it reuses the caller's active opam
+switch and existing build artifacts instead of provisioning and rebuilding the
+consumer project.
+
+For OCaml, `_build` must already contain `.cmt`/`.cmti` typedtree artifacts for
+every analyzed source file, including `(test ...)` stanzas. Run Archlint after
+the consumer's build and test steps so those test artifacts are present.
+Configure Dune to retain typedtrees for executable modules in the consumer
+repository; keeping this in Dune configuration also makes it part of
+shared-cache keys:
+
+```lisp
+; dune
+(env
+ (_
+  (bin_annot true)))
+```
+
+After the ordinary build and tests, build Dune's `@check` alias. That alias
+materializes annotations for native-only executable and test implementations
+without linking or running the project again.
 
 ```yaml
 # flowglad/onton — OCaml
 jobs:
-  archlint:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+      - run: opam install . --deps-only --with-test --yes
+      - run: opam exec -- dune build @all
+      - run: opam exec -- dune runtest
+      - run: opam exec -- dune build @check
       - uses: flowglad/archlint@v1
         with:
           adapter: ocaml

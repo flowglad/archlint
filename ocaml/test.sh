@@ -21,10 +21,31 @@ copy_fixture "$ROOT/ocaml/fixtures/base" "$TMPDIR"
 
 eval "$(opam env --switch "${ARCHLINT_OPAM_SWITCH:-$ROOT/ocaml}" --set-switch --shell=sh)"
 dune build --root "$ROOT/ocaml" >/dev/null
+
+unprepared_adapter() {
+  dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root .
+}
+
+build_consumer() {
+  # Overlay fixtures add source directories between assertions. Rebuild from a
+  # clean Dune view so each prepared workspace includes the newly added files.
+  (cd "$TMPDIR" && dune clean && dune build @all @runtest @check >/dev/null)
+}
+
+# The adapter consumes the caller's existing typedtree artifacts. It must fail
+# clearly, without silently taking ownership of the consumer build.
+expect_violation "configure Dune with (bin_annot true) and build @check" unprepared_adapter
+if [ -d "$TMPDIR/_build" ]; then
+  printf '%s\n' "OCaml adapter unexpectedly built the consumer fixture" >&2
+  exit 1
+fi
+
+build_consumer
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts.json"
 uv run --project "$ROOT" python "$ROOT/evaluate.py" "$TMPDIR/facts.json"
 
 copy_fixture "$ROOT/ocaml/fixtures/state-open-plain" "$TMPDIR"
+build_consumer
 
 # A hand-rolled harness in a dune (test ...) stanza: no Alcotest/QCheck/etc.,
 # pass/fail signalled purely by the process exit code. The dune stanza is the
@@ -76,6 +97,7 @@ assert "Open_shell.incidental" not in open_core["qualifiedReferences"], open_cor
 PY
 
 copy_fixture "$ROOT/ocaml/fixtures/constant-only" "$TMPDIR"
+build_consumer
 
 constant_lint() {
   dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . \
@@ -86,5 +108,6 @@ expect_violation "core module property tests must reference every decision API: 
 # Regression: a linking-only property over [unit] that merely [ignore]s the API
 # is NOT meaningful, so closure must not let it satisfy coverage.
 copy_fixture "$ROOT/ocaml/fixtures/linkonly" "$TMPDIR"
+build_consumer
 
 expect_violation "core module property tests must reference every decision API: decide_link" constant_lint
