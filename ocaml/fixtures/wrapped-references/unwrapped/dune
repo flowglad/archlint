@@ -1,0 +1,5 @@
+(library
+ (name unwrapped_fixture)
+ (wrapped false)
+ (modules unwrapped_decision unwrapped_shell)
+ (libraries unix))

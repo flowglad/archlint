@@ -1,4 +1,16 @@
+(library
+ (name archlint_ocaml_adapter_lib)
+ (wrapped false)
+ (modules qualified_reference)
+ (libraries compiler-libs.common))
+
 (executable
  (name main)
+ (modules main)
  (flags (:standard -bin-annot))
- (libraries compiler-libs.common yojson))
+ (libraries archlint_ocaml_adapter_lib compiler-libs.common yojson))
+
+(test
+ (name qualified_reference_test)
+ (modules qualified_reference_test)
+ (libraries archlint_ocaml_adapter_lib compiler-libs.common))
