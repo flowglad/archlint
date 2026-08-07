@@ -130,6 +130,8 @@ Action inputs:
   (`${{ github.workspace }}`).
 - `ocaml-root` / `typescript-root`: source root relative to `repo-root`.
   Defaults to `.`.
+- `ocaml-version`: OCaml compiler version used by the OCaml adapter. Defaults
+  to `5.5`.
 - `go-module` (required for `go`) / `go-packages` (defaults to `./...`).
 - `swift-xcodegen` (required for `swift`): XcodeGen manifest relative to
   `repo-root`. Run the `swift` adapter on a `macos-latest` job.
