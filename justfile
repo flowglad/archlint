@@ -16,7 +16,7 @@
 export ARCHLINT_OPAM_SWITCH := env_var_or_default("ARCHLINT_OPAM_SWITCH", justfile_directory() / "ocaml")
 
 # OCaml compiler used when provisioning the local switch.
-ocaml_compiler := "ocaml-base-compiler.5.4.1"
+ocaml_compiler := "ocaml-base-compiler.5.5.0"
 
 # List available recipes.
 default:

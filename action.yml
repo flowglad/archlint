@@ -22,6 +22,10 @@ inputs:
     description: OCaml source root, relative to repo-root (adapter=ocaml).
     required: false
     default: "."
+  ocaml-version:
+    description: OCaml compiler version (adapter=ocaml).
+    required: false
+    default: "5.5"
   typescript-root:
     description: TypeScript source root, relative to repo-root (adapter=typescript).
     required: false
@@ -74,7 +78,7 @@ runs:
     - if: inputs.adapter == 'ocaml'
       uses: ocaml/setup-ocaml@v3
       with:
-        ocaml-compiler: "5.4"
+        ocaml-compiler: ${{ inputs.ocaml-version }}
     - if: inputs.adapter == 'ocaml'
       shell: bash
       # Install the adapter's deps into the switch setup-ocaml just provisioned.
