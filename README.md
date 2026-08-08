@@ -301,6 +301,17 @@ Each file fact includes:
 
 Language adapters may compute these facts with language-specific AST tooling, but the meaning of each field belongs to the shared evaluator. `decisionSurface` is the set of core APIs that handlers may structurally reference. `propertyTestSurface` is the callable subset that must be covered by generated property tests; static constants may be handler surfaces without becoming property-test obligations. `propertyChecks` is the normal form for generated property-test evidence. Each item represents one property check, its reachable API `references`, the `generatedInputs` observed in the property body, and any generated `operationSequences`. Each generated input reports syntactic `uses` where that generated value participates in the property body. These are anti-vacuity facts, not proof that the value flows to an assertion or specific API. Each operation sequence reports the generated `input` that controls the trace, the operation APIs reached while applying that trace, and assertion/postcondition APIs reached by the same property. References must come from the generated property expression or function body itself, including helpers structurally called by that property, not incidental examples elsewhere in the test file. The evaluator derives property-test coverage from reachable property references with at least one syntactically used generated input, and state coverage from operation-sequence evidence; adapters should therefore keep these fields structural and avoid broad identifier bags that would let unrelated modules appear linked.
 
+For OCaml, `qualifiedReferences` always uses the source-level
+`Module.symbol` representation expected by the evaluator. The adapter derives
+ownership from compilation-unit names in source-backed typedtree artifacts. A
+default Dune-wrapped unit such as `Wrapper__Decision` and its public alias path
+`Wrapper.Decision` therefore both emit `Decision.symbol`; the public alias is
+accepted only when the exact corresponding internal compilation unit belongs
+to an analyzed source file. Paths made available through Dune's implicit or
+explicit `-open` handling follow the same rule. Unwrapped units retain their
+direct names, and references canonically owned by the current source module are
+excluded.
+
 Effect evidence is also normalized. Adapters own language-specific classification of effectful dependencies, frameworks, and framework types, but they emit the matched values as `effectfulImports` and `effectfulIdentifiers`. The evaluator derives booleans from those structured lists. Do not add adapter-emitted `hasEffectful...` booleans.
 
 Shared mutable state evidence follows the same shape. Adapters own language-specific detection, but emit `sharedState` entries with a `kind` and structural `references`, such as `go-sync`, `swift-actor-var`, or `swift-database-queue`. The evaluator derives `has shared mutable state` from whether that list is non-empty. Do not add adapter-emitted `hasSharedMutableState` booleans.

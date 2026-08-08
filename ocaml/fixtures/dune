@@ -2,4 +2,5 @@
  base
  constant-only
  linkonly
- state-open-plain)
+ state-open-plain
+ wrapped-references)

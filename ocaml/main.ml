@@ -61,6 +61,7 @@ type interface_exports = {
 type typedtree_artifact = {
   artifact_path : string;
   source_path : string;
+  unit_name : string;
   load_path_visible : string list;
   load_path_hidden : string list;
 }
@@ -288,22 +289,15 @@ let record_longident facts lid =
         facts.effectful_identifiers <- add facts.effectful_identifiers part)
     parts
 
-let record_typedtree_reference facts ~current_module ~owner_modules path =
-  match Path.flatten (Path.scrape_extra_ty path) with
-  | `Contains_apply -> ()
-  | `Ok (head, suffixes) -> (
-      let owner_module = Ident.name head in
-      match List.rev suffixes with
-      | symbol :: _
-        when owner_module <> current_module
-             && StringSet.mem owner_module owner_modules ->
-          facts.qualified_references <-
-            add facts.qualified_references (owner_module ^ "." ^ symbol)
-      | _ -> ())
+let record_typedtree_reference facts ~current_module ~owner_index path =
+  match Qualified_reference.canonicalize owner_index ~current_module path with
+  | Some reference ->
+      facts.qualified_references <- add facts.qualified_references reference
+  | None -> ()
 
-let collect_typedtree_qualified_references ~current_module ~owner_modules artifact =
+let collect_typedtree_qualified_references ~current_module ~owner_index artifact =
   let facts = empty_facts () in
-  let record = record_typedtree_reference facts ~current_module ~owner_modules in
+  let record = record_typedtree_reference facts ~current_module ~owner_index in
   let iterator =
     {
       Tast_iterator.default_iterator with
@@ -1020,7 +1014,7 @@ let shared_state_facts facts =
 let effectful_import_list imports =
   imports |> List.filter (fun import -> StringSet.mem import effectful_imports)
 
-let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts ~owner_modules path =
+let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts ~owner_index path =
   let source = read_file path in
   let metadata = parse_metadata source in
   let facts =
@@ -1035,7 +1029,7 @@ let source_fact ~root:_ ~interfaces ~test_scope_paths ~typedtree_artifacts ~owne
         failwith (Printf.sprintf "missing typedtree artifact for %s" (absolute_path path))
   in
   let qualified_references =
-    collect_typedtree_qualified_references ~current_module:module_name ~owner_modules
+    collect_typedtree_qualified_references ~current_module:module_name ~owner_index
       artifact
   in
   let decision_surface, property_test_surface, decision_references =
@@ -1189,6 +1183,7 @@ let load_typedtree_artifacts ~source_root source_paths =
                  {
                    artifact_path;
                    source_path;
+                   unit_name = cmt.Cmt_format.cmt_modname;
                    load_path_visible = cmt.Cmt_format.cmt_loadpath.visible;
                    load_path_hidden = cmt.Cmt_format.cmt_loadpath.hidden;
                  })
@@ -1375,10 +1370,13 @@ let () =
   in
   let paths = collect_ocaml_files source_root in
   let typedtree_artifacts = load_typedtree_artifacts ~source_root paths in
-  let owner_modules =
-    paths
-    |> List.map (fun path -> String.capitalize_ascii (basename_without_extension path))
-    |> List.fold_left add StringSet.empty
+  let owner_index =
+    StringMap.bindings typedtree_artifacts
+    |> List.map (fun (_, artifact) ->
+           ( artifact.unit_name,
+             String.capitalize_ascii
+               (basename_without_extension artifact.source_path) ))
+    |> Qualified_reference.owner_index
   in
   let test_scope_paths = StringSet.of_list (collect_test_scope_paths source_root) in
   let interfaces =
@@ -1393,7 +1391,7 @@ let () =
     paths
     |> List.map
          (source_fact ~root ~interfaces ~test_scope_paths ~typedtree_artifacts
-            ~owner_modules)
+            ~owner_index)
   in
   let json = `Assoc [ ("files", `List (List.map file_fact_to_json files)) ] in
   Yojson.Safe.pretty_to_channel stdout json;

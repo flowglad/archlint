@@ -21,6 +21,7 @@ copy_fixture "$ROOT/ocaml/fixtures/base" "$TMPDIR"
 
 eval "$(opam env --switch "${ARCHLINT_OPAM_SWITCH:-$ROOT/ocaml}" --set-switch --shell=sh)"
 dune build --root "$ROOT/ocaml" >/dev/null
+dune runtest --root "$ROOT/ocaml" >/dev/null
 dune exec --root "$ROOT/ocaml" ./main.exe -- --repo-root "$TMPDIR" --ocaml-root . > "$TMPDIR/facts.json"
 uv run --project "$ROOT" python "$ROOT/evaluate.py" "$TMPDIR/facts.json"
 
@@ -88,3 +89,49 @@ expect_violation "core module property tests must reference every decision API: 
 copy_fixture "$ROOT/ocaml/fixtures/linkonly" "$TMPDIR"
 
 expect_violation "core module property tests must reference every decision API: decide_link" constant_lint
+
+WRAPPED_TMP="$TMPDIR/wrapped-references"
+copy_fixture "$ROOT/ocaml/fixtures/wrapped-references" "$WRAPPED_TMP"
+dune exec --root "$ROOT/ocaml" ./main.exe -- \
+  --repo-root "$WRAPPED_TMP" --ocaml-root . > "$WRAPPED_TMP/facts.json"
+assert_facts "$WRAPPED_TMP/facts.json" <<PY
+import json
+import sys
+
+sys.path.insert(0, "$ROOT")
+import evaluate
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+by_suffix = {
+    suffix: next(item for item in document["files"] if item["path"].endswith(suffix))
+    for suffix in (
+        "/caller/cross_shell.ml",
+        "/caller/open_shell.ml",
+        "/same/same_decision.ml",
+        "/same/same_shell.ml",
+        "/unwrapped/unwrapped_shell.ml",
+    )
+}
+
+# Explicit cross-library wrapper qualification canonicalizes to the source
+# module used by the evaluator.
+assert "Decision.decide" in by_suffix["/caller/cross_shell.ml"]["qualifiedReferences"], by_suffix
+assert not any(
+    reference.startswith("Wrapper.") or reference.startswith("Wrapper__")
+    for reference in by_suffix["/caller/cross_shell.ml"]["qualifiedReferences"]
+), by_suffix
+
+# The same owned unit is recovered when the wrapper was supplied by [-open].
+assert "Decision.decide" in by_suffix["/caller/open_shell.ml"]["qualifiedReferences"], by_suffix
+
+# Dune's implicit open for modules within a wrapped library resolves to the
+# sibling source module, while the defining module does not emit itself.
+assert "Same_decision.decide" in by_suffix["/same/same_shell.ml"]["qualifiedReferences"], by_suffix
+assert by_suffix["/same/same_decision.ml"]["qualifiedReferences"] == [], by_suffix
+
+# [(wrapped false)] retains its direct compilation-unit behavior.
+assert "Unwrapped_decision.decide" in by_suffix["/unwrapped/unwrapped_shell.ml"]["qualifiedReferences"], by_suffix
+
+files = evaluate.parse_fact_document(document)
+assert evaluate.evaluate_shell_modules(files) == [], evaluate.evaluate_shell_modules(files)
+PY
