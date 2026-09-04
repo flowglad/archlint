@@ -25,7 +25,9 @@ inputs:
   ocaml-version:
     description: OCaml compiler version (adapter=ocaml).
     required: false
-    default: "5.5"
+    # Keep the default patch-pinned: setup-ocaml resolves a minor-only version
+    # to the newest patch, which can conflict with consumers that pin OCaml.
+    default: "5.5.0"
   typescript-root:
     description: TypeScript source root, relative to repo-root (adapter=typescript).
     required: false
