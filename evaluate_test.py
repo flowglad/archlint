@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
+import re
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from jsonschema import Draft202012Validator
 
 sys.path.insert(0, str(Path(__file__).parent))
 import evaluate
+
+
+class ActionContractTests(unittest.TestCase):
+    def test_default_ocaml_compiler_is_patch_pinned(self):
+        action = (Path(__file__).parent / "action.yml").read_text()
+        ocaml_input = action.split("  ocaml-version:\n", 1)[1].split(
+            "  typescript-root:\n", 1
+        )[0]
+        default = re.search(r'^    default: "([^"]+)"$', ocaml_input, re.MULTILINE)
+
+        self.assertIsNotNone(default)
+        self.assertRegex(default.group(1), r"^\d+\.\d+\.\d+$")
 
 
 def source_file(**overrides):

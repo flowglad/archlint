@@ -64,7 +64,7 @@ jobs:
       # rather than compiling a second one (locally it defaults to ocaml/_opam).
       - uses: ocaml/setup-ocaml@v3
         with:
-          ocaml-compiler: "5.5"
+          ocaml-compiler: "5.5.0"
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
